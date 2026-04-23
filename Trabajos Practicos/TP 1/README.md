@@ -12,8 +12,8 @@ Instalar MediaPipe y aplicar alguna solucion de vision artificial.
 Guia oficial de referencia:
 - https://ai.google.dev/edge/mediapipe/solutions/guide?hl=es-419
 
-## Implementacion actual (TP 1 v2)
-La version actual de [TP 1 v2.py](TP%201%20v2.py) implementa una calculadora por mano en tiempo real usando **MediaPipe Hand Landmarker**.
+## Implementacion actual (Grupo 4)
+La version actual en [tp1_main_grupo_4.py](tp1_main_grupo_4.py) implementa una calculadora por mano en tiempo real usando **MediaPipe Hand Landmarker**.
 
 Que hace:
 - Detecta landmarks de una mano con webcam (modo `VIDEO` de MediaPipe Tasks).
@@ -24,7 +24,7 @@ Que hace:
 ## Estructura de archivos (modularizada)
 Se separo el codigo en archivos mas chicos para mantenerlo entendible:
 
-- [TP 1 v2.py](TP%201%20v2.py): flujo principal (captura de camara, ciclo de frames y control de estados).
+- [tp1_main_grupo_4.py](tp1_main_grupo_4.py): flujo principal (captura de camara, ciclo de frames y control de estados).
 - [tp1_vision.py](tp1_vision.py): todo lo relacionado a vision artificial.
   - descarga de modelo `.task`
   - inicializacion de `HandLandmarker`
@@ -44,6 +44,17 @@ Se separo el codigo en archivos mas chicos para mantenerlo entendible:
 - Hand Landmarker (ejemplo Python/Colab):
   - https://colab.research.google.com/github/googlesamples/mediapipe/blob/main/examples/hand_landmarker/python/hand_landmarker.ipynb?hl=es-419
 
+## Como funciona (resumen)
+1. Se inicializa el Task de mano con `RunningMode.VIDEO`.
+2. En cada frame:
+  - OpenCV captura la imagen en BGR.
+  - Se convierte a RGB y se envuelve en `mp.Image`.
+  - Se ejecuta `detect_for_video(...)` con timestamp en milisegundos.
+3. Con los landmarks detectados, se estima que dedos estan extendidos.
+4. Ese patron de dedos se mapea a un digito de 0 a 5.
+5. Un estabilizador temporal evita que el numero cambie por ruido entre frames.
+6. El usuario confirma el numero y arma la operacion por teclado.
+
 ## Controles
 - `Enter`: confirmar numero detectado
 - `+ - * /`: seleccionar operador
@@ -60,7 +71,7 @@ pip install mediapipe opencv-python numpy
 2. Ejecutar desde esta carpeta:
 
 ```bash
-python "TP 1 v2.py"
+python "tp1_main_grupo_4.py"
 ```
 
 ## Notas de funcionamiento
