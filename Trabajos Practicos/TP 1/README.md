@@ -6,6 +6,13 @@
 - Cuatrimestre: 1C 2026
 - Entrega: 23 de abril
 
+## Integrantes (Grupo 4)
+
+| DNI | Apellido, Nombre |
+|---:|---|
+| 43.630.151 | Antonioli, Iván Oscar |
+| 43.664.669 | Di Nicco, Luis Demetrio |
+| 41.069.597 | Rojas, Tomas Ian |
 ## Consigna
 Instalar MediaPipe y aplicar alguna solucion de vision artificial.
 
