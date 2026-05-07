@@ -1,21 +1,7 @@
-"""
-Clasificador - Visión Artificial
-=================================
-Carga el modelo entrenado y clasifica formas en tiempo real
-usando la webcam.
-
-Uso:
-  python clasificador.py
-
-Controles:
-  Q → salir
-"""
-
 import cv2
 import numpy as np
 from joblib import load
 
-# ── Configuración ─────────────────────────────────────────────────────────────
 MODELO_PATH    = "modelo.joblib"
 UMBRAL_BINARIO = 127
 AREA_MIN       = 500
@@ -24,21 +10,23 @@ ETIQUETAS = {
     1: "cuadrado",
     2: "triangulo",
     3: "estrella",
+    4: "hexagono",
+    5: "circulo",
 }
 
 COLORES = {
     1: (0, 200, 255),
     2: (255, 100, 0),
     3: (0, 255, 128),
+    4: (0, 100, 150),
+    5: (0, 0, 255),
 }
 COLOR_DEFAULT = (200, 200, 200)
 
-# ── Carga del modelo ──────────────────────────────────────────────────────────
 print("Cargando modelo...")
 clasificador = load(MODELO_PATH)
 print("Modelo cargado.")
 
-# ── Funciones ─────────────────────────────────────────────────────────────────
 def preprocesar(frame):
     gris = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     blur = cv2.GaussianBlur(gris, (5, 5), 0)
@@ -54,7 +42,6 @@ def calcular_hu(contorno):
     hu = cv2.HuMoments(momentos).flatten()
     return hu
 
-# ── Main ──────────────────────────────────────────────────────────────────────
 cap = cv2.VideoCapture(0)
 if not cap.isOpened():
     print("ERROR: No se pudo abrir la webcam.")
@@ -78,7 +65,6 @@ while True:
         nombre = ETIQUETAS.get(etiqueta, f"clase {etiqueta}")
         color  = COLORES.get(etiqueta, COLOR_DEFAULT)
 
-        # Dibujar contorno y etiqueta
         cv2.drawContours(frame, [contorno], -1, color, 2)
         x, y, _, _ = cv2.boundingRect(contorno)
         cv2.putText(frame, nombre, (x, y - 10),

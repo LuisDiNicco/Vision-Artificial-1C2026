@@ -1,38 +1,26 @@
-"""
-Generador de Descriptores - Visión Artificial
-=============================================
-Uso:
-  1. Presentá la forma frente a la webcam sobre un fondo claro.
-  2. Usá las teclas 1, 2, 3... para seleccionar la etiqueta activa.
-  3. Presioná ESPACIO para guardar los invariantes de Hu en el CSV.
-  4. Presioná Q para salir.
-
-El CSV resultante (dataset.csv) tiene 8 columnas:
-  hu1, hu2, hu3, hu4, hu5, hu6, hu7, etiqueta
-"""
-
 import cv2
 import numpy as np
 import csv
 import os
 
-# ── Diccionario de etiquetas ─────────────────────────────────────────────────
 ETIQUETAS = {
     1: "cuadrado",
     2: "triangulo",
     3: "estrella",
+    4: "hexagono",
+    5: "circulo",
 }
 
-# ── Configuración ─────────────────────────────────────────────────────────────
 CSV_PATH       = "dataset.csv"
-UMBRAL_BINARIO = 127   # umbral para binarización (ajustá según iluminación)
-AREA_MIN       = 500   # área mínima del contorno para considerarlo válido
+UMBRAL_BINARIO = 127   
+AREA_MIN       = 90   
 
-# Colores por etiqueta (BGR) para feedback visual
 COLORES = {
-    1: (0, 200, 255),   # amarillo-naranja → cuadrado
-    2: (255, 100, 0),   # azul             → triángulo
-    3: (0, 255, 128),   # verde            → estrella
+    1: (0, 200, 255),   # amarillo-naranja 
+    2: (255, 100, 0),   # azul             
+    3: (0, 255, 128),   # verde            
+    4: (0, 100, 150),   # marron      
+    5: (0, 0, 255),     # rojo             
 }
 COLOR_DEFAULT = (200, 200, 200)
 
@@ -57,7 +45,6 @@ def calcular_hu(contorno):
     return hu
 
 def guardar_en_csv(hu, etiqueta, path):
-    """Agrega una fila al CSV. Crea el archivo con encabezado si no existe."""
     archivo_nuevo = not os.path.exists(path)
     with open(path, "a", newline="") as f:
         writer = csv.writer(f)
@@ -66,7 +53,6 @@ def guardar_en_csv(hu, etiqueta, path):
         writer.writerow([f"{v:.10e}" for v in hu] + [etiqueta])
 
 def contar_muestras_por_etiqueta(path):
-    """Lee el CSV y devuelve un dict {etiqueta: cantidad}."""
     conteo = {}
     if not os.path.exists(path):
         return conteo
@@ -82,16 +68,13 @@ def dibujar_hud(display, etiqueta_activa, conteo, contorno_ok, flash):
     color_activo = COLORES.get(etiqueta_activa, COLOR_DEFAULT)
     nombre_activo = ETIQUETAS.get(etiqueta_activa, f"clase {etiqueta_activa}")
 
-    # ── Panel superior ────────────────────────────────────────────────────────
     cv2.rectangle(display, (0, 0), (w, 70), (30, 30, 30), -1)
 
-    # Etiqueta activa
     cv2.putText(display, f"Etiqueta activa:", (10, 22),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.55, (180, 180, 180), 1)
     cv2.putText(display, f"[{etiqueta_activa}] {nombre_activo.upper()}",
                 (10, 52), cv2.FONT_HERSHEY_SIMPLEX, 0.9, color_activo, 2)
 
-    # Conteo de muestras (derecha)
     linea_y = 18
     cv2.putText(display, "Muestras guardadas:", (w - 210, linea_y),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.45, (150, 150, 150), 1)
@@ -103,7 +86,6 @@ def dibujar_hud(display, etiqueta_activa, conteo, contorno_ok, flash):
                     (w - 210, linea_y), cv2.FONT_HERSHEY_SIMPLEX,
                     0.45, color_c, 1)
 
-    # ── Estado del contorno ───────────────────────────────────────────────────
     if contorno_ok:
         msg  = "Contorno OK  -  ESPACIO para guardar"
         col  = color_activo
@@ -113,7 +95,6 @@ def dibujar_hud(display, etiqueta_activa, conteo, contorno_ok, flash):
     cv2.putText(display, msg, (10, h - 12),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.55, col, 2)
 
-    # ── Flash verde al guardar ────────────────────────────────────────────────
     if flash > 0:
         overlay = display.copy()
         cv2.rectangle(overlay, (0, 0), (w, h), (0, 255, 0), -1)
@@ -138,7 +119,7 @@ def main():
 
     etiqueta_activa = 1
     conteo = contar_muestras_por_etiqueta(CSV_PATH)
-    flash  = 0   # frames restantes del flash visual
+    flash  = 0  
 
     while True:
         ret, frame = cap.read()
@@ -152,7 +133,6 @@ def main():
 
         color_activo = COLORES.get(etiqueta_activa, COLOR_DEFAULT)
 
-        # Dibujar contorno detectado
         if contorno is not None:
             cv2.drawContours(display, [contorno], -1, color_activo, 2)
 
@@ -167,32 +147,29 @@ def main():
 
         tecla = cv2.waitKey(1) & 0xFF
 
-        # Salir
         if tecla in (ord('q'), ord('Q')):
             print(f"\nDataset guardado en: {os.path.abspath(CSV_PATH)}")
             print(f"Total de muestras: {sum(conteo.values())}")
             break
 
-        # Cambiar etiqueta con teclas numéricas
         elif chr(tecla).isdigit() and int(chr(tecla)) in ETIQUETAS:
             etiqueta_activa = int(chr(tecla))
             nombre = ETIQUETAS[etiqueta_activa]
             print(f"Etiqueta cambiada a [{etiqueta_activa}] {nombre}")
 
-        # Capturar muestra
         elif tecla == ord(' '):
             if contorno is not None:
                 hu = calcular_hu(contorno)
                 guardar_en_csv(hu, etiqueta_activa, CSV_PATH)
                 conteo[etiqueta_activa] = conteo.get(etiqueta_activa, 0) + 1
-                flash = 6  # duración del flash (frames)
+                flash = 6 
                 nombre = ETIQUETAS[etiqueta_activa]
                 total = sum(conteo.values())
                 print(f"  Guardada: [{etiqueta_activa}] {nombre} "
                       f"(total {nombre}: {conteo[etiqueta_activa]}, "
                       f"total general: {total})")
             else:
-                print("  ⚠  Sin contorno válido para capturar.")
+                print("Sin contorno válido para capturar.")
 
     cap.release()
     cv2.destroyAllWindows()
