@@ -11,7 +11,7 @@ from PIL import Image
 from sklearn.metrics import classification_report, confusion_matrix
 from torchvision import datasets, transforms
 
-from utils.tp3_config import CLASS_NAMES_ES, DEVICE, IMG_SIZE, MODEL_PATHS, TEST_PATH, USE_AMP, get_num_workers
+from utils.tp3_config import CLASS_NAMES_ES, DEVICE, EVAL_OUTPUT_DIR, IMG_SIZE, MODEL_PATHS, TEST_PATH, USE_AMP, get_num_workers
 from models.tp3_models import ModeloBase, ModeloOptimizado
 
 
@@ -65,6 +65,7 @@ def predict_image(model, image_path):
 
 
 def evaluate_dataset(model):
+    EVAL_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     dataset = datasets.ImageFolder(TEST_PATH, transform=build_test_transform())
     num_workers = get_num_workers()
     loader_kwargs = {
@@ -106,10 +107,11 @@ def evaluate_dataset(model):
     plt.ylabel("Real")
     plt.title("Matriz de confusion")
     plt.tight_layout()
-    plt.savefig("matriz_confusion.png", dpi=150, bbox_inches="tight")
+    plt.savefig(EVAL_OUTPUT_DIR / "matriz_confusion.png", dpi=150, bbox_inches="tight")
     plt.close()
 
 def show_random_predictions(model, quantity=6):
+    EVAL_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     dataset = datasets.ImageFolder(TEST_PATH, transform=build_test_transform())
     indices = random.sample(range(len(dataset.samples)), k=min(quantity, len(dataset.samples)))
 
@@ -134,7 +136,7 @@ def show_random_predictions(model, quantity=6):
         axis.axis("off")
 
     plt.tight_layout()
-    plt.savefig("predicciones_aleatorias.png", dpi=150, bbox_inches="tight")
+    plt.savefig(EVAL_OUTPUT_DIR / "predicciones_aleatorias.png", dpi=150, bbox_inches="tight")
     plt.close(fig)
 
 

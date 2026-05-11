@@ -1,3 +1,8 @@
-# Python cache and bytecode
 __pycache__/
-*.py[cod]
+*.pyc
+*.pyo
+*.pyd
+.venv/
+Trabajos Practicos/TP 3/modelos_guardados/
+Trabajos Practicos/TP 3/salida entrenamiento/
+Trabajos Practicos/TP 3/salida evaluacion/

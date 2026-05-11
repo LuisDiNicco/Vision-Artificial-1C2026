@@ -173,8 +173,8 @@ python entrenador.py --modo optimized     # Solo modelo optimizado
 El script:
 - Entrena el modelo en GPU si está disponible, sino usa CPU
 - Guarda el mejor modelo en `modelo_base.pt`, `modelo_augmentation.pt`, `modelo_optimizado.pt`
-- Genera gráficos comparativos en `comparacion_resultados.png`
-- Guarda los resultados en `resultados_entrenamiento.json`
+- Genera gráficos y métricas en `salida entrenamiento/`
+- Guarda el resumen general en `salida entrenamiento/resultados_entrenamiento.json`
 
 ### Evaluar los modelos
 ```bash
@@ -182,8 +182,8 @@ python evaluador.py
 ```
 
 Genera:
-- **Matriz de confusión** (`matriz_confusion.png`) - muestra qué clases se confunden
-- **Predicciones aleatorias** (`predicciones_aleatorias.png`) - 9 ejemplos del modelo predicitendo
+- **Matriz de confusión** (`salida evaluacion/matriz_confusion.png`) - muestra qué clases se confunden
+- **Predicciones aleatorias** (`salida evaluacion/predicciones_aleatorias.png`) - 9 ejemplos del modelo predicitendo
 - **Métricas por clase** (Precision, Recall, F1-Score)
 - **Accuracy general** del modelo
 
@@ -225,12 +225,13 @@ Todos se generan automáticamente al ejecutar los scripts:
 - `modelo_augmentation.pt` - Mejor modelo con augmentation
 - `modelo_optimizado.pt` - Mejor modelo optimizado
 
-**Métricas y gráficos** (guardados en raíz):
-- `resultados_entrenamiento.json` - Métricas de cada modelo en formato JSON
-- `comparacion_resultados.png` - Gráfico comparando los 3 modelos (accuracy vs loss)
-- `matriz_confusion.png` - Matriz de confusión del mejor modelo
-- `predicciones_aleatorias.png` - 9 ejemplos de predicciones correctas/incorrectas
-- `modelo_*_history.png` - Gráficos de accuracy y loss por epoch para cada modelo
+**Métricas y gráficos**:
+- `salida entrenamiento/resultados_entrenamiento.json` - Métricas de cada modelo en formato JSON
+- `salida entrenamiento/comparacion_resultados.png` - Gráfico comparando los 3 modelos (accuracy vs loss)
+- `salida entrenamiento/modelo_*_history.png` - Gráficos de accuracy y loss por epoch para cada modelo
+- `salida entrenamiento/modelo_*_history.json` - Historial numérico de cada entrenamiento
+- `salida evaluacion/matriz_confusion.png` - Matriz de confusión del modelo evaluado
+- `salida evaluacion/predicciones_aleatorias.png` - Ejemplos de predicciones correctas/incorrectas
 
 ---
 
