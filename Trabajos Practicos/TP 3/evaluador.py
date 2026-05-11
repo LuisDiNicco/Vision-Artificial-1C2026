@@ -1,341 +1,179 @@
-"""
-Script para evaluar y usar el modelo entrenado en imágenes de prueba.
-
-Permite cargar modelos entrenados y realizar predicciones sobre imágenes
-del conjunto de prueba o imágenes nuevas.
-"""
-
+import argparse
 import os
-import numpy as np
+import random
+import warnings
+
 import matplotlib.pyplot as plt
-from PIL import Image
-import tensorflow as tf
-from tensorflow import keras
-from sklearn.metrics import classification_report, confusion_matrix
+import numpy as np
 import seaborn as sns
+import torch
+from PIL import Image
+from sklearn.metrics import classification_report, confusion_matrix
+from torchvision import datasets, transforms
 
-# Configuración
-IMG_SIZE = 150
-NUM_CLASSES = 6
-
-# Mapeo de clases
-CLASS_NAMES = ['buildings', 'forest', 'glacier', 'mountain', 'sea', 'street']
-CLASS_NAMES_ES = ['edificios', 'bosques', 'glaciares', 'montañas', 'mar', 'calles']
-
-DATASET_PATH = "Imaganes de Paisajes"
-TEST_PATH = os.path.join(DATASET_PATH, "seg_test")
+from utils.tp3_config import CLASS_NAMES_ES, DEVICE, IMG_SIZE, MODEL_PATHS, TEST_PATH, USE_AMP, get_num_workers
+from models.tp3_models import ModeloBase, ModeloOptimizado
 
 
-def cargar_modelo(ruta_modelo):
-    """
-    Carga un modelo entrenado desde archivo.
+def build_model_from_path(model_path):
+    if "optimized" in model_path or "optimizado" in model_path:
+        return ModeloOptimizado().to(DEVICE)
+    return ModeloBase().to(DEVICE)
+
+
+def load_model(model_path):
+    if not os.path.exists(model_path):
+        raise FileNotFoundError(model_path)
+
+    model = build_model_from_path(model_path)
     
-    Args:
-        ruta_modelo: ruta al archivo del modelo (.h5)
+    # Silenciamos temporalmente el FutureWarning para tener una consola limpia en el TP
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category=FutureWarning)
+        # Revertimos a weights_only=False porque DirectML inyecta variables no estándar
+        state_dict = torch.load(model_path, map_location=DEVICE, weights_only=False)
         
-    Returns:
-        modelo: modelo de Keras cargado
-    """
-    print(f"\n📂 Cargando modelo desde '{ruta_modelo}'...")
-    
-    if not os.path.exists(ruta_modelo):
-        print(f"❌ Error: archivo '{ruta_modelo}' no encontrado")
-        return None
-    
-    modelo = keras.models.load_model(ruta_modelo)
-    print(f"✓ Modelo cargado exitosamente")
-    print(f"  Parámetros totales: {modelo.count_params():,}")
-    
-    return modelo
+    model.load_state_dict(state_dict)
+    model.eval()
+    return model
 
 
-def cargar_imagen(ruta_imagen):
-    """
-    Carga y prepara una imagen para predicción.
-    
-    Pasos:
-    1. Cargar imagen
-    2. Redimensionar a 150x150
-    3. Normalizar píxeles (dividir por 255)
-    4. Agregar dimensión de batch
-    
-    Args:
-        ruta_imagen: ruta a la imagen
-        
-    Returns:
-        imagen_procesada: numpy array listo para predicción
-        imagen_original: PIL Image para mostrar
-    """
-    
-    # Cargar imagen
-    img = Image.open(ruta_imagen).convert('RGB')
-    imagen_original = img.copy()
-    
-    # Redimensionar
-    img = img.resize((IMG_SIZE, IMG_SIZE))
-    
-    # Convertir a array y normalizar
-    img_array = np.array(img) / 255.0
-    
-    # Agregar dimensión de batch: (150, 150, 3) → (1, 150, 150, 3)
-    img_array = np.expand_dims(img_array, axis=0)
-    
-    return img_array, imagen_original
+def build_test_transform():
+    return transforms.Compose([
+        transforms.Resize((IMG_SIZE, IMG_SIZE)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+    ])
 
 
-def predecir_imagen(modelo, ruta_imagen):
-    """
-    Realiza una predicción sobre una imagen individual.
-    
-    Args:
-        modelo: modelo de Keras
-        ruta_imagen: ruta a la imagen
-        
-    Returns:
-        prediccion: probabilidades para cada clase
-        clase_predicha: índice de la clase con mayor probabilidad
-    """
-    
-    img_array, img_original = cargar_imagen(ruta_imagen)
-    
-    # Realizar predicción
-    # La salida es un array de probabilidades para cada clase
-    prediccion = modelo.predict(img_array, verbose=0)
-    clase_predicha = np.argmax(prediccion[0])
-    confianza = prediccion[0][clase_predicha]
-    
-    return prediccion[0], clase_predicha, confianza, img_original
+def predict_image(model, image_path):
+    image = Image.open(image_path).convert("RGB")
+    transformed = build_test_transform()(image).unsqueeze(0).to(DEVICE)
+
+    # CORRECCIÓN AMD: Usamos no_grad() en lugar de inference_mode()
+    with torch.no_grad():
+        if USE_AMP:
+            with torch.cuda.amp.autocast():
+                outputs = model(transformed)
+        else:
+            outputs = model(transformed)
+
+    probabilities = torch.softmax(outputs, dim=1)[0].cpu().numpy()
+    predicted_index = int(np.argmax(probabilities))
+    confidence = float(probabilities[predicted_index])
+    return probabilities, predicted_index, confidence, image
 
 
-def mostrar_prediccion(ruta_imagen, prediccion, clase_predicha, confianza):
-    """
-    Muestra una imagen y su predicción.
-    
-    Args:
-        ruta_imagen: ruta de la imagen
-        prediccion: probabilidades para cada clase
-        clase_predicha: índice de la clase predicha
-        confianza: probabilidad de la clase predicha
-    """
-    
-    img_array, img_original = cargar_imagen(ruta_imagen)
-    
-    # Crear figura
-    fig, axes = plt.subplots(1, 2, figsize=(12, 4))
-    
-    # Mostrar imagen
-    axes[0].imshow(img_original)
-    axes[0].set_title(f"Imagen: {os.path.basename(ruta_imagen)}")
-    axes[0].axis('off')
-    
-    # Gráfica de probabilidades
-    colores = ['#2ecc71' if i == clase_predicha else '#95a5a6' for i in range(NUM_CLASSES)]
-    axes[1].barh(CLASS_NAMES_ES, prediccion, color=colores)
-    axes[1].set_xlabel('Probabilidad')
-    axes[1].set_title(f"Predicción: {CLASS_NAMES_ES[clase_predicha]}\n(Confianza: {confianza:.2%})")
-    axes[1].set_xlim([0, 1])
-    
-    # Mostrar valores en barras
-    for i, v in enumerate(prediccion):
-        axes[1].text(v + 0.02, i, f'{v:.3f}', va='center')
-    
-    plt.tight_layout()
-    plt.show()
+def evaluate_dataset(model):
+    dataset = datasets.ImageFolder(TEST_PATH, transform=build_test_transform())
+    num_workers = get_num_workers()
+    loader_kwargs = {
+        "batch_size": 32,
+        "shuffle": False,
+        "num_workers": num_workers,
+        "pin_memory": USE_AMP,
+    }
+    if num_workers > 0:
+        loader_kwargs["persistent_workers"] = True
+        loader_kwargs["prefetch_factor"] = 2
 
+    loader = torch.utils.data.DataLoader(dataset, **loader_kwargs)
 
-def evaluar_en_conjunto_prueba(modelo):
-    """
-    Evalúa el modelo en todo el conjunto de prueba.
-    
-    Calcula:
-    - Exactitud general
-    - Reporte de clasificación (precision, recall, F1)
-    - Matriz de confusión
-    
-    Args:
-        modelo: modelo entrenado
-    """
-    
-    print(f"\n📊 Evaluando en conjunto de prueba...")
-    
-    # Generador para cargar datos de prueba
-    from tensorflow.keras.preprocessing.image import ImageDataGenerator
-    
-    test_generator = ImageDataGenerator(rescale=1./255)
-    
-    test_data = test_generator.flow_from_directory(
-        TEST_PATH,
-        target_size=(IMG_SIZE, IMG_SIZE),
-        batch_size=32,
-        class_mode='categorical',
-        shuffle=False
-    )
-    
-    # Predicciones en todo el conjunto
-    print("Realizando predicciones (esto puede tardar)...")
-    predicciones = modelo.predict(test_data, verbose=1)
-    
-    # Clases predichas y reales
-    clases_predichas = np.argmax(predicciones, axis=1)
-    clases_reales = test_data.classes
-    
-    # Calcular métricas
-    exactitud = np.mean(clases_predichas == clases_reales)
-    
-    print(f"\n✓ Evaluación completada")
-    print(f"\n📈 Exactitud general: {exactitud:.4f} ({exactitud*100:.2f}%)")
-    
-    # Reporte detallado
-    print(f"\n📋 Reporte de clasificación:\n")
-    print(classification_report(clases_reales, clases_predichas, target_names=CLASS_NAMES_ES))
-    
-    # Matriz de confusión
-    cm = confusion_matrix(clases_reales, clases_predichas)
-    
-    # Graficar matriz de confusión
+    all_predictions = []
+    all_labels = []
+
+    # CORRECCIÓN AMD: Usamos no_grad() en lugar de inference_mode()
+    with torch.no_grad():
+        for images, labels in loader:
+            images = images.to(DEVICE)
+            labels = labels.to(DEVICE)
+            if USE_AMP:
+                with torch.cuda.amp.autocast():
+                    outputs = model(images)
+            else:
+                outputs = model(images)
+            all_predictions.extend(outputs.argmax(dim=1).cpu().tolist())
+            all_labels.extend(labels.cpu().tolist())
+
+    accuracy = np.mean(np.array(all_predictions) == np.array(all_labels))
+    print(f"\nAccuracy total: {accuracy:.4f} ({accuracy * 100:.2f}%)")
+    print(classification_report(all_labels, all_predictions, target_names=CLASS_NAMES_ES))
+
+    matrix = confusion_matrix(all_labels, all_predictions)
     plt.figure(figsize=(10, 8))
-    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', 
-                xticklabels=CLASS_NAMES_ES, yticklabels=CLASS_NAMES_ES,
-                cbar_kws={'label': 'Cantidad'})
-    plt.xlabel('Predicho')
-    plt.ylabel('Real')
-    plt.title('Matriz de Confusión')
+    sns.heatmap(matrix, annot=True, fmt="d", cmap="Blues", xticklabels=CLASS_NAMES_ES, yticklabels=CLASS_NAMES_ES)
+    plt.xlabel("Predicho")
+    plt.ylabel("Real")
+    plt.title("Matriz de confusion")
     plt.tight_layout()
-    plt.savefig('matriz_confusion.png', dpi=150, bbox_inches='tight')
-    print("\n✓ Matriz de confusión guardada como 'matriz_confusion.png'")
-    plt.show()
+    plt.savefig("matriz_confusion.png", dpi=150, bbox_inches="tight")
+    plt.close()
 
+def show_random_predictions(model, quantity=6):
+    dataset = datasets.ImageFolder(TEST_PATH, transform=build_test_transform())
+    indices = random.sample(range(len(dataset.samples)), k=min(quantity, len(dataset.samples)))
 
-def demostrar_predicciones_aleatorias(modelo, cantidad=6):
-    """
-    Realiza predicciones sobre imágenes aleatorias del conjunto de prueba.
-    
-    Args:
-        modelo: modelo entrenado
-        cantidad: cantidad de imágenes a mostrar
-    """
-    
-    print(f"\n🎲 Mostrando {cantidad} predicciones aleatorias...")
-    
-    # Obtener lista de todas las imágenes
-    imagenes = []
-    for clase_idx, clase_nombre in enumerate(CLASS_NAMES):
-        clase_path = os.path.join(TEST_PATH, clase_nombre)
-        if os.path.exists(clase_path):
-            archivos = os.listdir(clase_path)
-            for archivo in archivos:
-                ruta_completa = os.path.join(clase_path, archivo)
-                imagenes.append((ruta_completa, clase_nombre))
-    
-    # Seleccionar aleatoriamente
-    indices_aleatorios = np.random.choice(len(imagenes), cantidad, replace=False)
-    
-    # Crear grid de figuras
-    filas = (cantidad + 2) // 3
-    fig, axes = plt.subplots(filas, 3, figsize=(15, 5*filas))
-    axes = axes.flatten() if cantidad > 1 else [axes]
-    
-    for idx_plot, idx_imagen in enumerate(indices_aleatorios):
-        ruta_imagen, clase_real = imagenes[idx_imagen]
-        
-        # Predicción
-        prediccion, clase_predicha, confianza, img_original = predecir_imagen(modelo, ruta_imagen)
-        
-        # Mostrar en grid
-        ax = axes[idx_plot]
-        ax.imshow(img_original)
-        
-        # Color: verde si correcto, rojo si incorrecto
-        clase_correcta = (CLASS_NAMES[clase_predicha] == clase_real)
-        color = 'green' if clase_correcta else 'red'
-        
-        titulo = f"Real: {clase_real}\n"
-        titulo += f"Pred: {CLASS_NAMES[clase_predicha]}\n"
-        titulo += f"Conf: {confianza:.2%}"
-        
-        ax.set_title(titulo, color=color, fontweight='bold')
-        ax.axis('off')
-    
-    # Ocultar axes sobrantes
-    for idx in range(idx_plot + 1, len(axes)):
-        axes[idx].axis('off')
-    
+    rows = (len(indices) + 2) // 3
+    fig, axes = plt.subplots(rows, 3, figsize=(15, 5 * rows))
+    axes = np.array(axes).reshape(-1)
+
+    for axis, index in zip(axes, indices):
+        image_path, label_index = dataset.samples[index]
+        probabilities, predicted_index, confidence, image = predict_image(model, image_path)
+        correct = predicted_index == label_index
+        color = "green" if correct else "red"
+        axis.imshow(image)
+        axis.set_title(
+            f"Real: {CLASS_NAMES_ES[label_index]}\nPred: {CLASS_NAMES_ES[predicted_index]}\nConf: {confidence:.2%}",
+            color=color,
+            fontweight="bold",
+        )
+        axis.axis("off")
+
+    for axis in axes[len(indices):]:
+        axis.axis("off")
+
     plt.tight_layout()
-    plt.savefig('predicciones_aleatorias.png', dpi=150, bbox_inches='tight')
-    print("✓ Predicciones guardadas como 'predicciones_aleatorias.png'")
-    plt.show()
+    plt.savefig("predicciones_aleatorias.png", dpi=150, bbox_inches="tight")
+    plt.close(fig)
 
 
 def main():
-    """
-    Función principal: menú para evaluar modelos.
-    """
-    
-    print("\n" + "="*70)
-    print("EVALUADOR DE MODELOS - Clasificación de Paisajes")
-    print("="*70)
-    
-    # Seleccionar modelo
-    print("\n¿Cuál modelo deseas evaluar?")
-    print("1. modelo_base.h5 (sin optimizaciones)")
-    print("2. modelo_augmentation.h5 (con data augmentation)")
-    print("3. modelo_optimizado.h5 (completamente optimizado)")
-    print("4. Otro modelo (especificar ruta)")
-    
-    opcion = input("\nOpción (1-4): ").strip()
-    
-    modelos_disponibles = {
-        '1': 'modelo_base.h5',
-        '2': 'modelo_augmentation.h5',
-        '3': 'modelo_optimizado.h5'
-    }
-    
-    if opcion in modelos_disponibles:
-        ruta_modelo = modelos_disponibles[opcion]
-    elif opcion == '4':
-        ruta_modelo = input("Ingresa la ruta del modelo: ").strip()
-    else:
-        print("❌ Opción inválida")
-        return
-    
-    # Cargar modelo
-    modelo = cargar_modelo(ruta_modelo)
-    if modelo is None:
-        return
-    
-    # Menú de opciones
-    while True:
-        print("\n" + "-"*70)
-        print("¿Qué deseas hacer?")
-        print("1. Evaluar en conjunto de prueba (con métricas)")
-        print("2. Ver predicciones aleatorias")
-        print("3. Predecir imagen específica")
-        print("4. Salir")
-        
-        opcion = input("\nOpción (1-4): ").strip()
-        
-        if opcion == '1':
-            evaluar_en_conjunto_prueba(modelo)
-        
-        elif opcion == '2':
-            cantidad = input("¿Cuántas imágenes? (default: 6): ").strip()
-            cantidad = int(cantidad) if cantidad.isdigit() else 6
-            demostrar_predicciones_aleatorias(modelo, cantidad)
-        
-        elif opcion == '3':
-            ruta_imagen = input("Ingresa la ruta de la imagen: ").strip()
-            if os.path.exists(ruta_imagen):
-                prediccion, clase_predicha, confianza, img_original = predecir_imagen(modelo, ruta_imagen)
-                mostrar_prediccion(ruta_imagen, prediccion, clase_predicha, confianza)
-            else:
-                print(f"❌ Archivo no encontrado: {ruta_imagen}")
-        
-        elif opcion == '4':
-            print("👋 Hasta luego!")
-            break
-        
+    parser = argparse.ArgumentParser(description="Evaluador TP 3")
+    parser.add_argument("--modelo", choices=["base", "augmentation", "optimized"], default="optimized")
+    args = parser.parse_args()
+
+    model_path = str(MODEL_PATHS[args.modelo])
+    model = load_model(model_path)
+
+    print(f"Modelo cargado: {model_path}")
+    print(f"Dispositivo: {DEVICE}")
+    print("1. Evaluar conjunto de prueba")
+    print("2. Ver predicciones aleatorias")
+    print("3. Predecir una imagen")
+
+    option = input("Opcion: ").strip()
+    if option == "1":
+        evaluate_dataset(model)
+    elif option == "2":
+        amount = input("Cantidad de imagenes: ").strip()
+        quantity = int(amount) if amount.isdigit() else 6
+        show_random_predictions(model, quantity)
+    elif option == "3":
+        image_path = input("Ruta de la imagen: ").strip()
+        if os.path.exists(image_path):
+            probabilities, predicted_index, confidence, image = predict_image(model, image_path)
+            plt.figure(figsize=(8, 4))
+            plt.subplot(1, 2, 1)
+            plt.imshow(image)
+            plt.axis("off")
+            plt.subplot(1, 2, 2)
+            plt.barh(CLASS_NAMES_ES, probabilities)
+            plt.title(f"Prediccion: {CLASS_NAMES_ES[predicted_index]} ({confidence:.2%})")
+            plt.tight_layout()
+            plt.show()
         else:
-            print("❌ Opción inválida")
+            print("Archivo no encontrado")
 
 
 if __name__ == "__main__":
