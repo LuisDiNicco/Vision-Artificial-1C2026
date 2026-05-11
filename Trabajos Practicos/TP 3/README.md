@@ -13,77 +13,32 @@ La consigna solicita entrenar un modelo de inteligencia artificial (clasificador
 ## Solución Implementada
 
 ### Objetivo
-Clasificar imágenes de paisajes en 6 categorías: **buildings, forest, glacier, mountain, sea, street** usando el Intel Image Classification Dataset.
+Clasificar imágenes de paisajes en 6 categorías: **buildings, forest, glacier, mountain, sea, street** usando el Intel Image Classification Dataset. El trabajo se enfoca en cumplir la consigna con un modelo entrenable, una evaluación clara y una comparación simple entre variantes.
 
 ### Arquitectura
-Se implementaron **3 modelos con diferentes niveles de sofisticación**:
+Se implementaron **3 variantes del mismo problema** para comparar resultados:
 
 #### 1. **Modelo Base**
-- Arquitectura simple: 3 bloques convolucionales (32 → 64 → 128 canales)
-- Sin regularización extra
-- Clasificador simple: 2 capas densas (128 → 64 → 6 clases)
-- Rápido pero menos preciso
+- Es la versión más simple.
+- Sirve como línea base para comparar.
 
 #### 2. **Modelo con Augmentation (Data)**
-- Mismo modelo base
-- Pero entrena con técnicas de aumento de datos:
-  - Rotaciones aleatorias (±15°)
-  - Flips horizontales (50% de probabilidad)
-  - Transformaciones afines (escala y traslación)
-- Mejora la generalización sin cambiar la arquitectura
+- Mantiene la misma estructura del modelo base.
+- Cambia la forma de entrenar usando imágenes modificadas levemente para que el modelo vea más ejemplos.
+- Ayuda a que generalice mejor.
 
 #### 3. **Modelo Optimizado**
-- Arquitectura mejorada: 4 bloques convolucionales (32 → 64 → 128 → 256 canales)
-- **Batch Normalization** en cada bloque (estabiliza el entrenamiento)
-- **Dropout** progresivo (10% → 15% → 20% → 25%) para evitar overfitting
-- **Learning Rate Scheduler** (ReduceLROnPlateau) para ajustar el aprendizaje automáticamente
-- Alcanza mejor precisión y generalización
+- Es la versión más completa.
+- Usa una red más profunda y está pensada para dar mejores resultados que las dos anteriores.
+- Permite ver si una arquitectura más fuerte mejora la evaluación final.
 
 ---
 
-## Técnicas para Mejorar las Métricas
+## Qué se hizo para cumplir la consigna
 
-### 1. **Data Augmentation**
-Aumenta artificialmente el dataset mediante transformaciones de las imágenes de entrenamiento:
-- Rotaciones, flips y traslaciones aleatorias
-- Hace que el modelo sea más robusto ante variaciones
+La idea fue armar un flujo completo: cargar el dataset, entrenar varios modelos, guardar el mejor resultado, evaluar sobre el conjunto de prueba y generar archivos para mostrar el desempeño.
 
-### 2. **Batch Normalization**
-Normaliza las activaciones entre capas:
-- Estabiliza el entrenamiento
-- Permite usar learning rates más altos
-- Mejora la convergencia
-
-### 3. **Dropout**
-Desactiva aleatoriamente neuronas durante el entrenamiento:
-- Previene overfitting (memorizar datos específicos)
-- Fuerza al modelo a aprender características más generales
-- Aumenta de 10% → 25% en capas más profundas
-
-### 4. **Optimizador AdamW**
-Versión mejorada de Adam:
-- Incluye weight decay (regularización L2)
-- Evita que los pesos crezcan demasiado
-
-### 5. **Learning Rate Scheduler (ReduceLROnPlateau)**
-Ajusta dinámicamente la tasa de aprendizaje:
-- Si la pérdida de validación no mejora, reduce el learning rate
-- Permite fine-tuning en etapas finales del entrenamiento
-
-### 6. **Early Stopping**
-Detiene el entrenamiento después de N epochs sin mejora:
-- Evita que el modelo se sobreentrenadiente
-- Guarda automáticamente el mejor modelo
-
-### 7. **Mixed Precision (AMP)**
-Entrena con precisión mixta (float16/float32):
-- Acelera el entrenamiento en GPU
-- Reduce el uso de memoria
-
-### 8. **AdaptiveAvgPool2d**
-Capa de pooling adaptativo:
-- Adapta automáticamente cualquier tamaño de entrada a una salida fija
-- Evita capas densas enormes (mucho más eficiente)
+En el entrenamiento se registran la pérdida y la accuracy por época, y además se guardan gráficos comparativos para presentar cómo evolucionó cada modelo. En la evaluación se generan la matriz de confusión, las métricas por clase y ejemplos de predicciones para mostrar si el modelo realmente aprendió a distinguir las categorías.
 
 ---
 
@@ -156,7 +111,7 @@ pip install torch torchvision torchaudio
 python diagnostico_gpu.py
 ```
 
-**Entrenar todos los modelos** (toma ~30-50 minutos con GPU):
+**Entrenar todos los modelos**:
 ```bash
 python entrenador.py
 # O equivalente:
@@ -183,7 +138,7 @@ python evaluador.py
 
 Genera:
 - **Matriz de confusión** (`salida evaluacion/matriz_confusion.png`) - muestra qué clases se confunden
-- **Predicciones aleatorias** (`salida evaluacion/predicciones_aleatorias.png`) - 9 ejemplos del modelo predicitendo
+- **Predicciones aleatorias** (`salida evaluacion/predicciones_aleatorias.png`) - ejemplos del modelo prediciendo
 - **Métricas por clase** (Precision, Recall, F1-Score)
 - **Accuracy general** del modelo
 
@@ -193,10 +148,10 @@ Entrenando modelo_base
 Dispositivo: cuda
 AMP: si
 
-Epoch 1/30 - Loss: 1.45 | Acc: 0.52 | Val Loss: 1.22 | Val Acc: 0.60
-Epoch 2/30 - Loss: 1.10 | Acc: 0.64 | Val Loss: 1.00 | Val Acc: 0.68
+Epoca 1/20 | train 0.5200/1.4500 | val 0.6000/1.2200 | lr 1.00e-03
+Epoca 2/20 | train 0.6400/1.1000 | val 0.6800/1.0000 | lr 1.00e-03
 ...
-Epoch 30/30 - Loss: 0.45 | Acc: 0.88 | Val Loss: 0.55 | Val Acc: 0.84
+Epoca 20/20 | train 0.8800/0.4500 | val 0.8400/0.5500 | lr 5.00e-04
 
 Test Accuracy: 0.84
 ```
@@ -235,16 +190,13 @@ Todos se generan automáticamente al ejecutar los scripts:
 
 ---
 
-## Optimizaciones Implementadas
+## Resumen del Flujo
 
-✅ **GPU acceleration** - Soporta NVIDIA (CUDA), AMD (DirectML en Windows) y macOS (Metal)  
-✅ **torch.compile()** - Compilación JIT en PyTorch 2.0+ (acelera GPU 20-30%)  
-✅ **Mixed Precision (AMP)** - Entrena más rápido en GPU NVIDIA (float16/float32)  
-✅ **Efficient DataLoader** - `num_workers`, `pin_memory`, `prefetch_factor`, `persistent_workers`  
-✅ **Early Stopping** - Evita entrenar de más (paciencia de 4 epochs)  
-✅ **Learning Rate Scheduler** - Ajusta automáticamente el learning rate (ReduceLROnPlateau)  
-✅ **AdaptiveAvgPool** - Reduce parámetros sin perder información  
-✅ **Imports relativos** - Los módulos usan imports relativos para ser portables entre máquinas  
+1. Se carga el dataset de entrenamiento y prueba.
+2. Se entrenan tres variantes del modelo para comparar resultados.
+3. Se guardan los pesos del mejor modelo en `modelos_guardados/`.
+4. Se generan archivos de salida separados para entrenamiento y evaluación.
+5. Se usa esa información para explicar el desempeño del sistema frente a la consigna.
 
 ---
 
@@ -252,19 +204,12 @@ Todos se generan automáticamente al ejecutar los scripts:
 
 ### Hardware
 
-- **Para GPU NVIDIA:** El código usa CUDA automáticamente (recomendado)
-- **Para GPU AMD en Windows (Radeon RX 6000+):** Usa DirectML (integrado en PyTorch 2.0+)
-  - Reinstala PyTorch con una versión compatible de Python (idealmente 3.13 o 3.12)
-  - Verifica con: `python diagnostico_gpu.py`
-  - No requiere ROCm ni configuración adicional
-  - Tu driver normal de AMD Adrenalin es suficiente
-- **Para macOS con GPU:** El código detecta Metal automáticamente
-- **CPU:** Funciona en cualquier máquina, pero es lento (~5-10 min/epoch vs 10-30 seg/epoch en GPU)
+- El código detecta automáticamente la GPU disponible.
+- Si no hay GPU, funciona igual en CPU.
+- Para revisar la detección de hardware se puede ejecutar `python diagnostico_gpu.py`.
 
 ### Otros puntos
 
-- El dataset tiene aproximadamente 14,000 imágenes (12,800 train + 1,600 test)
-- Cada epoch toma ~10-30 segundos en GPU (NVIDIA) o ~15-40 segundos en AMD DirectML
-- En CPU toma ~5-10 minutos por epoch
-- El modelo optimizado es más lento de entrenar pero más preciso
-- Puedes interrumpir el entrenamiento con Ctrl+C sin problemas (se guarda el mejor modelo encontrado hasta ese momento)
+- El dataset está organizado por carpetas, así que `ImageFolder` puede leerlo directamente.
+- El entrenamiento guarda el mejor estado encontrado durante la ejecución.
+- Los archivos de salida quedan separados en carpetas para no mezclar resultados de entrenamiento con evaluación.
