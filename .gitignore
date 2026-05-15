@@ -1,3 +1,6 @@
-# Python cache and bytecode
 __pycache__/
-*.py[cod]
+*.pyc
+*.pyo
+*.pyd
+.venv/
+Contenidos de Clase
