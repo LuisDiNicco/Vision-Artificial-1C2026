@@ -5,19 +5,21 @@ from torch.utils.data import DataLoader, random_split
 from .tp3_config import BATCH_SIZE, IMG_SIZE, TEST_PATH, TRAIN_PATH, USE_PIN_MEMORY, get_num_workers
 
 
-def _build_transforms(use_augmentation: bool):
+def build_transforms(use_augmentation: bool):
+    # Normalizacion estandar para imagenes RGB.
     normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
 
-    test_transform = transforms.Compose([
+    # Transformacion base usada para validacion y test.
+    eval_transform = transforms.Compose([
         transforms.Resize((IMG_SIZE, IMG_SIZE)),
         transforms.ToTensor(),
         normalize,
     ])
 
     if not use_augmentation:
-        return test_transform, test_transform
+        return eval_transform, eval_transform
 
-    # Aumentacion basica: flip, rotacion y zoom/traslacion.
+    # Aumentacion basica para que el modelo vea mas variedad de ejemplos.
     train_transform = transforms.Compose([
         transforms.Resize((IMG_SIZE, IMG_SIZE)),
         transforms.RandomHorizontalFlip(p=0.5),
@@ -28,17 +30,18 @@ def _build_transforms(use_augmentation: bool):
         normalize,
     ])
 
-    return train_transform, test_transform
+    return train_transform, eval_transform
 
 
 def build_loaders(use_augmentation: bool = False, batch_size: int = BATCH_SIZE):
-    train_transform, test_transform = _build_transforms(use_augmentation)
+    # Prepara transforms y carga los datasets desde disco.
+    train_transform, eval_transform = build_transforms(use_augmentation)
     num_workers = get_num_workers()
 
     full_train_dataset = datasets.ImageFolder(TRAIN_PATH, transform=train_transform)
-    test_dataset = datasets.ImageFolder(TEST_PATH, transform=test_transform)
+    test_dataset = datasets.ImageFolder(TEST_PATH, transform=eval_transform)
 
-    # Division recomendada: una parte pequena para validacion.
+    # Dividimos entrenamiento en train/val para medir generalizacion.
     train_size = int(len(full_train_dataset) * 0.95)
     val_size = len(full_train_dataset) - train_size
     generator = torch.Generator().manual_seed(42)

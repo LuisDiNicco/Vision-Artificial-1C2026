@@ -1,85 +1,29 @@
-import json
-import sys
 import time
 from pathlib import Path
 
-import matplotlib.pyplot as plt
 import torch
 import torch.nn as nn
 
 from .tp3_config import DEVICE, EPOCHS, LEARNING_RATE
+from .tp3_training_core import evaluate_one_epoch, train_one_epoch
 
 
-def _print_progress(prefix, current, total):
-    if total <= 0:
-        return
-    percent = int((current / total) * 100)
-    bar_len = 20
-    filled = int(bar_len * current / total)
-    bar = "#" * filled + "." * (bar_len - filled)
-    sys.stdout.write(f"\r{prefix} [{bar}] {current}/{total} ({percent}%)")
-    if current >= total:
-        sys.stdout.write("\n")
-    sys.stdout.flush()
+def _create_optimizer(model):
+    # SGD con momentum para un avance mas estable.
+    return torch.optim.SGD(model.parameters(), lr=LEARNING_RATE, momentum=0.9)
 
 
-def train_one_epoch(model, loader, criterion, optimizer):
-    model.train()
-    running_loss = 0.0
-    correct = 0
-    total = 0
-    total_batches = len(loader)
-    update_interval = max(1, total_batches // 20)
-
-    for batch_idx, (images, labels) in enumerate(loader, 1):
-        images = images.to(DEVICE)
-        labels = labels.to(DEVICE)
-
-        optimizer.zero_grad(set_to_none=True)
-
-        outputs = model(images)
-        loss = criterion(outputs, labels)
-        loss.backward()
-        optimizer.step()
-
-        running_loss += loss.item()
-        predictions = outputs.argmax(dim=1)
-        correct += (predictions == labels).sum().item()
-        total += labels.size(0)
-
-        if batch_idx % update_interval == 0 or batch_idx == total_batches:
-            _print_progress("Train", batch_idx, total_batches)
-
-    return running_loss / max(1, len(loader)), correct / max(1, total)
-
-
-def evaluate(model, loader, criterion):
-    model.eval()
-    running_loss = 0.0
-    correct = 0
-    total = 0
-
-    # Solo evaluacion: sin gradientes.
-    with torch.no_grad():
-        for images, labels in loader:
-            images = images.to(DEVICE)
-            labels = labels.to(DEVICE)
-            outputs = model(images)
-            loss = criterion(outputs, labels)
-
-            running_loss += loss.item()
-            predictions = outputs.argmax(dim=1)
-            correct += (predictions == labels).sum().item()
-            total += labels.size(0)
-
-    return running_loss / max(1, len(loader)), correct / max(1, total)
+def _copy_state_dict(model):
+    # Copia segura a CPU para guardar el mejor modelo.
+    return {key: value.detach().cpu().clone() for key, value in model.state_dict().items()}
 
 
 def train_model(model, train_loader, val_loader, model_name, epochs=EPOCHS):
+    # Pipeline basico: entrenar, validar, guardar el mejor modelo.
     criterion = nn.CrossEntropyLoss()
-    # SGD con momentum para un avance mas estable.
-    optimizer = torch.optim.SGD(model.parameters(), lr=LEARNING_RATE, momentum=0.9)
+    optimizer = _create_optimizer(model)
 
+    # Guardamos el historial para poder graficar y explicar el progreso.
     history = {"train_loss": [], "train_acc": [], "val_loss": [], "val_acc": []}
     models_dir = Path("modelos_guardados")
     models_dir.mkdir(parents=True, exist_ok=True)
@@ -87,7 +31,6 @@ def train_model(model, train_loader, val_loader, model_name, epochs=EPOCHS):
     final_path = str(models_dir / f"{model_name}.pt")
     best_loss = float("inf")
     bad_epochs = 0
-    # Criterio de terminacion simple: cortar si no mejora la loss.
     patience = 4
     best_state = None
 
@@ -96,9 +39,10 @@ def train_model(model, train_loader, val_loader, model_name, epochs=EPOCHS):
 
     start_time = time.time()
 
+    # Cada epoca = entrenamiento + validacion completa.
     for epoch in range(epochs):
         train_loss, train_acc = train_one_epoch(model, train_loader, criterion, optimizer)
-        val_loss, val_acc = evaluate(model, val_loader, criterion)
+        val_loss, val_acc = evaluate_one_epoch(model, val_loader, criterion)
 
         history["train_loss"].append(train_loss)
         history["train_acc"].append(train_acc)
@@ -112,16 +56,19 @@ def train_model(model, train_loader, val_loader, model_name, epochs=EPOCHS):
             f"val {val_acc:.4f}/{val_loss:.4f} | lr {current_lr:.2e}"
         )
 
+        # Si la validacion mejora, guardamos el modelo.
         if val_loss < best_loss:
             best_loss = val_loss
             bad_epochs = 0
-            best_state = {key: value.detach().cpu().clone() for key, value in model.state_dict().items()}
+            best_state = _copy_state_dict(model)
         else:
             bad_epochs += 1
             if bad_epochs >= patience:
+                # Si no mejora varias epocas, frenamos para evitar sobreajuste.
                 print("Early stopping activado")
                 break
 
+    # Restauramos el mejor estado y guardamos el modelo final.
     if best_state is not None:
         model.load_state_dict(best_state)
     else:
@@ -136,31 +83,6 @@ def train_model(model, train_loader, val_loader, model_name, epochs=EPOCHS):
 
 
 def evaluate_saved_model(model, loader):
+    # Evalua el modelo final en el conjunto de prueba.
     criterion = nn.CrossEntropyLoss()
-    return evaluate(model, loader, criterion)
-
-
-def save_history(history, output_path):
-    with open(output_path, "w", encoding="utf-8") as file:
-        json.dump(history, file, indent=2)
-
-
-def plot_history(history, title, output_path):
-    epochs = range(1, len(history["train_loss"]) + 1)
-    fig, axes = plt.subplots(1, 2, figsize=(12, 4))
-
-    axes[0].plot(epochs, history["train_acc"], label="train")
-    axes[0].plot(epochs, history["val_acc"], label="val")
-    axes[0].set_title(f"Accuracy - {title}")
-    axes[0].set_xlabel("Epoca")
-    axes[0].legend()
-
-    axes[1].plot(epochs, history["train_loss"], label="train")
-    axes[1].plot(epochs, history["val_loss"], label="val")
-    axes[1].set_title(f"Loss - {title}")
-    axes[1].set_xlabel("Epoca")
-    axes[1].legend()
-
-    plt.tight_layout()
-    plt.savefig(output_path, dpi=150, bbox_inches="tight")
-    plt.close(fig)
+    return evaluate_one_epoch(model, loader, criterion)
