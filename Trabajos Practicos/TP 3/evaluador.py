@@ -1,7 +1,6 @@
 import argparse
 import os
 import random
-import warnings
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -11,34 +10,33 @@ from PIL import Image
 from sklearn.metrics import classification_report, confusion_matrix
 from torchvision import datasets, transforms
 
-from utils.tp3_config import CLASS_NAMES_ES, DEVICE, EVAL_OUTPUT_DIR, IMG_SIZE, MODEL_PATHS, TEST_PATH, USE_AMP, get_num_workers
+from utils.tp3_config import CLASS_NAMES_ES, DEVICE, EVAL_OUTPUT_DIR, IMG_SIZE, MODEL_PATHS, TEST_PATH, USE_PIN_MEMORY, get_num_workers
+from utils.runtime.device_utils import safe_torch_load
 from models.tp3_models import ModeloBase, ModeloOptimizado
 
 
 def build_model_from_path(model_path):
+    # Elegimos la arquitectura segun el nombre del archivo.
     if "optimized" in model_path or "optimizado" in model_path:
         return ModeloOptimizado().to(DEVICE)
     return ModeloBase().to(DEVICE)
 
 
 def load_model(model_path):
+    # Cargamos el modelo guardado en disco.
     if not os.path.exists(model_path):
         raise FileNotFoundError(model_path)
 
     model = build_model_from_path(model_path)
-    
-    # Silenciamos temporalmente el FutureWarning para tener una consola limpia en el TP
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", category=FutureWarning)
-        # Revertimos a weights_only=False porque DirectML inyecta variables no estándar
-        state_dict = torch.load(model_path, map_location=DEVICE, weights_only=False)
-        
+
+    state_dict = safe_torch_load(model_path, DEVICE)
     model.load_state_dict(state_dict)
     model.eval()
     return model
 
 
 def build_test_transform():
+    # Transformaciones basicas para evaluar.
     return transforms.Compose([
         transforms.Resize((IMG_SIZE, IMG_SIZE)),
         transforms.ToTensor(),
@@ -47,16 +45,13 @@ def build_test_transform():
 
 
 def predict_image(model, image_path):
+    # Predecimos una sola imagen.
     image = Image.open(image_path).convert("RGB")
     transformed = build_test_transform()(image).unsqueeze(0).to(DEVICE)
 
-    # CORRECCIÓN AMD: Usamos no_grad() en lugar de inference_mode()
+    # Evaluacion simple, sin gradientes.
     with torch.no_grad():
-        if USE_AMP:
-            with torch.cuda.amp.autocast():
-                outputs = model(transformed)
-        else:
-            outputs = model(transformed)
+        outputs = model(transformed)
 
     probabilities = torch.softmax(outputs, dim=1)[0].cpu().numpy()
     predicted_index = int(np.argmax(probabilities))
@@ -65,6 +60,7 @@ def predict_image(model, image_path):
 
 
 def evaluate_dataset(model):
+    # Evaluamos todo el conjunto de prueba.
     EVAL_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     dataset = datasets.ImageFolder(TEST_PATH, transform=build_test_transform())
     num_workers = get_num_workers()
@@ -72,7 +68,7 @@ def evaluate_dataset(model):
         "batch_size": 32,
         "shuffle": False,
         "num_workers": num_workers,
-        "pin_memory": USE_AMP,
+        "pin_memory": USE_PIN_MEMORY,
     }
     if num_workers > 0:
         loader_kwargs["persistent_workers"] = True
@@ -83,23 +79,21 @@ def evaluate_dataset(model):
     all_predictions = []
     all_labels = []
 
-    # CORRECCIÓN AMD: Usamos no_grad() en lugar de inference_mode()
+    # Evaluacion simple, sin gradientes.
     with torch.no_grad():
         for images, labels in loader:
             images = images.to(DEVICE)
             labels = labels.to(DEVICE)
-            if USE_AMP:
-                with torch.cuda.amp.autocast():
-                    outputs = model(images)
-            else:
-                outputs = model(images)
+            outputs = model(images)
             all_predictions.extend(outputs.argmax(dim=1).cpu().tolist())
             all_labels.extend(labels.cpu().tolist())
 
+    # Calculamos el porcentaje de aciertos.
     accuracy = np.mean(np.array(all_predictions) == np.array(all_labels))
     print(f"\nAccuracy total: {accuracy:.4f} ({accuracy * 100:.2f}%)")
     print(classification_report(all_labels, all_predictions, target_names=CLASS_NAMES_ES))
 
+    # Matriz de confusion para ver en que clases se equivoca.
     matrix = confusion_matrix(all_labels, all_predictions)
     plt.figure(figsize=(10, 8))
     sns.heatmap(matrix, annot=True, fmt="d", cmap="Blues", xticklabels=CLASS_NAMES_ES, yticklabels=CLASS_NAMES_ES)
@@ -111,6 +105,7 @@ def evaluate_dataset(model):
     plt.close()
 
 def show_random_predictions(model, quantity=6):
+    # Mostramos algunas predicciones al azar.
     EVAL_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     dataset = datasets.ImageFolder(TEST_PATH, transform=build_test_transform())
     indices = random.sample(range(len(dataset.samples)), k=min(quantity, len(dataset.samples)))
@@ -141,6 +136,7 @@ def show_random_predictions(model, quantity=6):
 
 
 def main():
+    # Elegimos el modelo a evaluar.
     parser = argparse.ArgumentParser(description="Evaluador TP 3")
     parser.add_argument("--modelo", choices=["base", "augmentation", "optimized"], default="optimized")
     args = parser.parse_args()
@@ -149,11 +145,11 @@ def main():
     model = load_model(model_path)
 
     print(f"Modelo cargado: {model_path}")
-    print(f"Dispositivo: {DEVICE}")
     print("1. Evaluar conjunto de prueba")
     print("2. Ver predicciones aleatorias")
     print("3. Predecir una imagen")
 
+    # Menu simple para elegir la accion.
     option = input("Opcion: ").strip()
     if option == "1":
         evaluate_dataset(model)

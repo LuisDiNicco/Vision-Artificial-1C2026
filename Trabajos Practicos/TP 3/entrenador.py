@@ -10,12 +10,14 @@ from utils.tp3_training import evaluate_saved_model, plot_history, save_history,
 
 
 def build_model(mode):
+    # Elegimos la arquitectura segun el modo.
     if mode == "optimized":
-        return ModeloOptimizado().to(DEVICE), True
-    return ModeloBase().to(DEVICE), mode == "augmentation"
+        return ModeloOptimizado().to(DEVICE)
+    return ModeloBase().to(DEVICE)
 
 
 def plot_comparison(results, output_path=TRAIN_OUTPUT_DIR / "comparacion_resultados.png"):
+    # Grafico simple para comparar resultados finales.
     names = [item["nombre"] for item in results]
     accuracies = [item["test_acc"] for item in results]
     losses = [item["test_loss"] for item in results]
@@ -34,15 +36,18 @@ def plot_comparison(results, output_path=TRAIN_OUTPUT_DIR / "comparacion_resulta
 
 
 def run_experiment(mode):
+    # Preparamos datos, modelo y nombres de salida.
     use_augmentation = mode in {"augmentation", "optimized"}
-    train_loader, test_loader = build_loaders(use_augmentation=use_augmentation)
-    model, use_scheduler = build_model(mode)
-    model_name = f"modelo_{mode}"
+    train_loader, val_loader, test_loader = build_loaders(use_augmentation=use_augmentation)
+    model = build_model(mode)
+    model_name = "modelo_optimizado" if mode == "optimized" else f"modelo_{mode}"
     TRAIN_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    history = train_model(model, train_loader, test_loader, model_name, use_scheduler=use_scheduler)
+    # Entrenamos con validacion y luego evaluamos con test.
+    history = train_model(model, train_loader, val_loader, model_name)
     test_loss, test_acc = evaluate_saved_model(model, test_loader)
 
+    # Guardamos un resumen para comparar despues.
     result = {
         "nombre": model_name,
         "test_acc": test_acc,
@@ -59,6 +64,7 @@ def run_experiment(mode):
 
 
 def main():
+    # Leemos el modo desde la linea de comandos.
     parser = argparse.ArgumentParser(description="Entrenador TP 3")
     parser.add_argument(
         "--modo",
@@ -77,6 +83,7 @@ def main():
         print("\nResultados guardados en salida entrenamiento/")
         return
 
+    # Si se pide un solo modelo, se ejecuta directamente.
     run_experiment(args.modo)
 
 

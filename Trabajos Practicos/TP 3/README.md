@@ -26,19 +26,32 @@ Se implementaron **3 variantes del mismo problema** para comparar resultados:
 - Mantiene la misma estructura del modelo base.
 - Cambia la forma de entrenar usando imágenes modificadas levemente para que el modelo vea más ejemplos.
 - Ayuda a que generalice mejor.
+- Aumentaciones usadas: flip horizontal, rotación leve, traslación y zoom.
 
 #### 3. **Modelo Optimizado**
 - Es la versión más completa.
-- Usa una red más profunda y está pensada para dar mejores resultados que las dos anteriores.
+- Usa una red más profunda (más capas convolucionales) y está pensada para dar mejores resultados que las dos anteriores.
 - Permite ver si una arquitectura más fuerte mejora la evaluación final.
 
 ---
 
 ## Qué se hizo para cumplir la consigna
 
-La idea fue armar un flujo completo: cargar el dataset, entrenar varios modelos, guardar el mejor resultado, evaluar sobre el conjunto de prueba y generar archivos para mostrar el desempeño.
+Se armó un flujo completo: cargar el dataset, entrenar varios modelos, guardar el mejor resultado, evaluar sobre el conjunto de prueba y generar archivos para mostrar el desempeño.
 
-En el entrenamiento se registran la pérdida y la accuracy por época, y además se guardan gráficos comparativos para presentar cómo evolucionó cada modelo. En la evaluación se generan la matriz de confusión, las métricas por clase y ejemplos de predicciones para mostrar si el modelo realmente aprendió a distinguir las categorías.
+**Justificación de decisiones**
+- **Tipo de modelo**: se eligió una CNN porque extrae características visuales con capas convolucionales y luego clasifica con capas totalmente conectadas, que es la estructura estándar para clasificación de imágenes.
+- **Preprocesamiento**: todas las imágenes se redimensionan a un tamaño fijo y se normalizan por canal para estabilizar el entrenamiento y mantener la escala de los valores.
+- **Separación de datos**: se divide el conjunto de entrenamiento en entrenamiento (95%) y validación (5%), y el conjunto de prueba queda aparte para evaluar al final.
+- **Entrenamiento**: se usa una función de pérdida de clasificación multiclase y optimización con SGD, registrando accuracy y loss por época para ver la evolución.
+- **Criterio de corte**: se aplica early stopping cuando la pérdida de validación deja de mejorar para evitar sobreentrenamiento innecesario.
+
+**Técnicas para mejorar métricas**
+- **Aumentación**: se generan variantes de las imágenes (flip, rotación, traslación, zoom, brillo y contraste) para aumentar la diversidad del dataset y mejorar la generalización.
+- **Modelo más profundo**: la versión optimizada agrega más bloques convolucionales para capturar patrones de mayor nivel.
+- **SGD con momentum**: agrega inercia al ajuste de pesos para estabilizar el descenso del error.
+
+En la evaluación se generan la matriz de confusión, las métricas por clase y ejemplos de predicciones para mostrar si el modelo aprendió a distinguir las categorías.
 
 ---
 
@@ -75,41 +88,14 @@ Cada imagen es un archivo `.jpg` de 150×150 píxeles. Las carpetas están organ
 
 ### Requisitos previos
 
-**Importante:** PyTorch suele publicar ruedas para Python 3.12/3.13 antes que para versiones nuevas. Si estás usando Python 3.14 y ves `No matching distribution found for torch`, instala Python 3.13 o 3.12 en un entorno virtual antes de seguir.
+**Version de Python recomendada:** 3.12
 
-**Instalación base (CPU):**
+**Instalación base:**
 ```bash
 pip install torch torchvision torchaudio matplotlib scikit-learn
 ```
 
-**Para GPU NVIDIA (CUDA):**
-```bash
-# Windows/Linux - reemplaza cu118 por tu versión de CUDA
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
-```
-
-**Para GPU AMD en Windows (DirectML - Recomendado):**
-
-**⚠️ IMPORTANTE:** `torch-directml` como paquete separado ya NO EXISTE. DirectML está integrado en PyTorch 2.0+.
-
-```bash
-# Opción 1: Instalar una versión estable compatible con tu Python
-pip uninstall torch torchvision torchaudio -y
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
-
-# Opción 2: Si tu Python sigue sin tener rueda compatible, bajar a Python 3.13 o 3.12
-pip uninstall torch torchvision torchaudio -y
-pip install torch torchvision torchaudio
-```
-
-> Luego ejecuta `python diagnostico_gpu.py` para verificar que DirectML se detectó correctamente
-
 ### Entrenar los modelos
-
-**Verificar GPU AMD primero** (solo si tienes GPU AMD):
-```bash
-python diagnostico_gpu.py
-```
 
 **Entrenar todos los modelos**:
 ```bash
@@ -126,10 +112,10 @@ python entrenador.py --modo optimized     # Solo modelo optimizado
 ```
 
 El script:
-- Entrena el modelo en GPU si está disponible, sino usa CPU
 - Guarda el mejor modelo en `modelo_base.pt`, `modelo_augmentation.pt`, `modelo_optimizado.pt`
 - Genera gráficos y métricas en `salida entrenamiento/`
 - Guarda el resumen general en `salida entrenamiento/resultados_entrenamiento.json`
+- Usa early stopping como criterio simple de terminación si la pérdida de validación deja de mejorar
 
 ### Evaluar los modelos
 ```bash
@@ -145,13 +131,12 @@ Genera:
 ### Ejemplo de salida esperada
 ```
 Entrenando modelo_base
-Dispositivo: cuda
-AMP: si
+Optimizador: SGD
 
 Epoca 1/20 | train 0.5200/1.4500 | val 0.6000/1.2200 | lr 1.00e-03
 Epoca 2/20 | train 0.6400/1.1000 | val 0.6800/1.0000 | lr 1.00e-03
 ...
-Epoca 20/20 | train 0.8800/0.4500 | val 0.8400/0.5500 | lr 5.00e-04
+Epoca 20/20 | train 0.8800/0.4500 | val 0.8400/0.5500 | lr 1.00e-03
 
 Test Accuracy: 0.84
 ```
@@ -168,6 +153,7 @@ Test Accuracy: 0.84
 | `tp3_data.py` | `utils/` | Carga datos y aplica transformaciones |
 | `tp3_training.py` | `utils/` | Lógica de entrenamiento, validación y generación de gráficos |
 | `tp3_config.py` | `utils/` | Rutas, constantes y configuración global |
+| `device_utils.py` | `utils/runtime/` | Utilidades de ejecución (dispositivo y carga segura) |
 
 ---
 
@@ -201,14 +187,6 @@ Todos se generan automáticamente al ejecutar los scripts:
 ---
 
 ## Notas Importantes
-
-### Hardware
-
-- El código detecta automáticamente la GPU disponible.
-- Si no hay GPU, funciona igual en CPU.
-- Para revisar la detección de hardware se puede ejecutar `python diagnostico_gpu.py`.
-
-### Otros puntos
 
 - El dataset está organizado por carpetas, así que `ImageFolder` puede leerlo directamente.
 - El entrenamiento guarda el mejor estado encontrado durante la ejecución.

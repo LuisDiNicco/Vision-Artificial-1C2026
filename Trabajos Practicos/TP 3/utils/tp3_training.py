@@ -1,51 +1,54 @@
-from __future__ import annotations
-
 import json
+import sys
 import time
-from contextlib import nullcontext
 from pathlib import Path
 
 import matplotlib.pyplot as plt
 import torch
 import torch.nn as nn
 
-from .tp3_config import DEVICE, DEVICE_TYPE, EPOCHS, LEARNING_RATE, USE_AMP
+from .tp3_config import DEVICE, EPOCHS, LEARNING_RATE
 
 
-def _autocast_context():
-    if USE_AMP:
-        return torch.amp.autocast(device_type="cuda", enabled=True)
-    return nullcontext()
+def _print_progress(prefix, current, total):
+    if total <= 0:
+        return
+    percent = int((current / total) * 100)
+    bar_len = 20
+    filled = int(bar_len * current / total)
+    bar = "#" * filled + "." * (bar_len - filled)
+    sys.stdout.write(f"\r{prefix} [{bar}] {current}/{total} ({percent}%)")
+    if current >= total:
+        sys.stdout.write("\n")
+    sys.stdout.flush()
 
 
-def train_one_epoch(model, loader, criterion, optimizer, scaler):
+def train_one_epoch(model, loader, criterion, optimizer):
     model.train()
     running_loss = 0.0
     correct = 0
     total = 0
+    total_batches = len(loader)
+    update_interval = max(1, total_batches // 20)
 
-    for images, labels in loader:
-        images = images.to(DEVICE, non_blocking=USE_AMP)
-        labels = labels.to(DEVICE, non_blocking=USE_AMP)
+    for batch_idx, (images, labels) in enumerate(loader, 1):
+        images = images.to(DEVICE)
+        labels = labels.to(DEVICE)
 
         optimizer.zero_grad(set_to_none=True)
 
-        with _autocast_context():
-            outputs = model(images)
-            loss = criterion(outputs, labels)
-
-        if USE_AMP:
-            scaler.scale(loss).backward()
-            scaler.step(optimizer)
-            scaler.update()
-        else:
-            loss.backward()
-            optimizer.step()
+        outputs = model(images)
+        loss = criterion(outputs, labels)
+        loss.backward()
+        optimizer.step()
 
         running_loss += loss.item()
         predictions = outputs.argmax(dim=1)
         correct += (predictions == labels).sum().item()
         total += labels.size(0)
+
+        if batch_idx % update_interval == 0 or batch_idx == total_batches:
+            _print_progress("Train", batch_idx, total_batches)
 
     return running_loss / max(1, len(loader)), correct / max(1, total)
 
@@ -56,15 +59,13 @@ def evaluate(model, loader, criterion):
     correct = 0
     total = 0
 
-    # CAMBIO AQUÍ: Reemplazamos inference_mode() por no_grad() por compatibilidad con DirectML
+    # Solo evaluacion: sin gradientes.
     with torch.no_grad():
         for images, labels in loader:
-            images = images.to(DEVICE, non_blocking=USE_AMP)
-            labels = labels.to(DEVICE, non_blocking=USE_AMP)
-
-            with _autocast_context():
-                outputs = model(images)
-                loss = criterion(outputs, labels)
+            images = images.to(DEVICE)
+            labels = labels.to(DEVICE)
+            outputs = model(images)
+            loss = criterion(outputs, labels)
 
             running_loss += loss.item()
             predictions = outputs.argmax(dim=1)
@@ -74,39 +75,29 @@ def evaluate(model, loader, criterion):
     return running_loss / max(1, len(loader)), correct / max(1, total)
 
 
-def train_model(model, train_loader, val_loader, model_name, epochs=EPOCHS, use_scheduler=False):
-    # Optimizaciones de GPU
-    if DEVICE_TYPE == "cuda":
-        try:
-            model = torch.compile(model, mode="reduce-overhead")
-            print("✓ torch.compile() activado")
-        except Exception:
-            pass  # PyTorch < 2.0 o incompatible
-    
+def train_model(model, train_loader, val_loader, model_name, epochs=EPOCHS):
     criterion = nn.CrossEntropyLoss()
-    optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=1e-4)
-    scheduler = None
-    if use_scheduler:
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="min", factor=0.5, patience=2)
-
-    scaler = torch.amp.GradScaler("cuda", enabled=USE_AMP)
+    # SGD con momentum para un avance mas estable.
+    optimizer = torch.optim.SGD(model.parameters(), lr=LEARNING_RATE, momentum=0.9)
 
     history = {"train_loss": [], "train_acc": [], "val_loss": [], "val_acc": []}
-    best_path = f"modelos_guardados/{model_name}_best.pt"
-    final_path = f"modelos_guardados/{model_name}.pt"
+    models_dir = Path("modelos_guardados")
+    models_dir.mkdir(parents=True, exist_ok=True)
+    best_path = str(models_dir / f"{model_name}_best.pt")
+    final_path = str(models_dir / f"{model_name}.pt")
     best_loss = float("inf")
     bad_epochs = 0
+    # Criterio de terminacion simple: cortar si no mejora la loss.
     patience = 4
     best_state = None
 
     print(f"\nEntrenando {model_name}")
-    print(f"Dispositivo: {DEVICE}")
-    print(f"AMP: {'si' if USE_AMP else 'no'}")
+    print("Optimizador: SGD")
 
     start_time = time.time()
 
     for epoch in range(epochs):
-        train_loss, train_acc = train_one_epoch(model, train_loader, criterion, optimizer, scaler)
+        train_loss, train_acc = train_one_epoch(model, train_loader, criterion, optimizer)
         val_loss, val_acc = evaluate(model, val_loader, criterion)
 
         history["train_loss"].append(train_loss)
@@ -120,9 +111,6 @@ def train_model(model, train_loader, val_loader, model_name, epochs=EPOCHS, use_
             f"train {train_acc:.4f}/{train_loss:.4f} | "
             f"val {val_acc:.4f}/{val_loss:.4f} | lr {current_lr:.2e}"
         )
-
-        if scheduler is not None:
-            scheduler.step(val_loss)
 
         if val_loss < best_loss:
             best_loss = val_loss
