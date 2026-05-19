@@ -8,7 +8,6 @@ from utils.tp3_evaluation import evaluate_dataset, load_model, predict_image, sh
 
 
 def main():
-    # Elegimos el modelo a evaluar.
     parser = argparse.ArgumentParser(description="Evaluador TP 3")
     parser.add_argument("--modelo", choices=["base", "augmentation", "optimized"], default="optimized")
     args = parser.parse_args()
@@ -21,7 +20,6 @@ def main():
     print("2. Ver predicciones aleatorias")
     print("3. Predecir una imagen")
 
-    # Menu simple para elegir la accion.
     option = input("Opcion: ").strip()
     if option == "1":
         evaluate_dataset(model)

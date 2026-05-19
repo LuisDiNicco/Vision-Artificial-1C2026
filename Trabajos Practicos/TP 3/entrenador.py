@@ -4,7 +4,7 @@ import json
 import matplotlib.pyplot as plt
 
 from models.tp3_models import ModeloBase, ModeloOptimizado
-from utils.tp3_config import DEVICE, MODEL_PATHS, TRAIN_OUTPUT_DIR
+from utils.tp3_config import MODEL_PATHS, TRAIN_OUTPUT_DIR
 from utils.tp3_data import build_loaders
 from utils.tp3_history import plot_history, save_history
 from utils.tp3_evaluation import evaluate_dataset, show_random_predictions
@@ -12,31 +12,26 @@ from utils.tp3_training import evaluate_saved_model, train_model
 
 
 def build_model(mode):
-    # Elegimos la arquitectura segun el modo.
     if mode == "optimized":
-        return ModeloOptimizado().to(DEVICE)
-    return ModeloBase().to(DEVICE)
+        return ModeloOptimizado()
+    return ModeloBase()
 
 
 def use_data_augmentation(mode):
-    # Usamos aumentacion solo en los modos que lo requieren.
     return mode in {"augmentation", "optimized"}
 
 
 def build_model_name(mode):
-    # Nombre claro para guardar archivos y reportes.
     if mode == "optimized":
         return "modelo_optimizado"
     return f"modelo_{mode}"
 
 
 def print_step(step_number, text):
-    # Mostrar el flujo como pasos, tipo notebook/colab.
     print(f"\nPaso {step_number}: {text}")
 
 
 def describe_improvements(mode):
-    # Tecnicas usadas para mejorar metricas.
     print("Tecnicas para mejorar metricas:")
     if use_data_augmentation(mode):
         print("- data augmentation (flip, rotacion, zoom, brillo)")
@@ -47,7 +42,6 @@ def describe_improvements(mode):
 
 
 def plot_comparison(results, output_path=TRAIN_OUTPUT_DIR / "comparacion_resultados.png"):
-    # Grafico simple para comparar resultados finales.
     names = [item["nombre"] for item in results]
     accuracies = [item["test_acc"] for item in results]
     losses = [item["test_loss"] for item in results]
@@ -67,7 +61,7 @@ def plot_comparison(results, output_path=TRAIN_OUTPUT_DIR / "comparacion_resulta
 
 def run_experiment(mode, run_demo=True):
     print_step(1, "Cargar dataset (train/val/test)")
-    train_loader, val_loader, test_loader = build_loaders(use_augmentation=use_data_augmentation(mode))
+    train_ds, val_ds, test_ds = build_loaders(use_augmentation=use_data_augmentation(mode))
 
     print_step(2, "Elegir arquitectura y tecnicas")
     model = build_model(mode)
@@ -76,10 +70,10 @@ def run_experiment(mode, run_demo=True):
     TRAIN_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
     print_step(3, "Entrenar y registrar metricas (accuracy y loss)")
-    history = train_model(model, train_loader, val_loader, model_name)
+    history = train_model(model, train_ds, val_ds, model_name)
 
     print_step(4, "Evaluar con el conjunto de test")
-    test_loss, test_acc = evaluate_saved_model(model, test_loader)
+    test_loss, test_acc = evaluate_saved_model(model, test_ds)
     if run_demo:
         evaluate_dataset(model)
         print("Matriz de confusion guardada en salida evaluacion/")
@@ -105,7 +99,6 @@ def run_experiment(mode, run_demo=True):
 
 
 def train_all_models():
-    # Entrenamos las tres variantes para comparar resultados.
     results = []
     for mode in ["base", "augmentation", "optimized"]:
         results.append(run_experiment(mode, run_demo=False))
@@ -119,7 +112,6 @@ def train_all_models():
 
 
 def main():
-    # Leemos el modo desde la linea de comandos.
     parser = argparse.ArgumentParser(description="Entrenador TP 3")
     parser.add_argument(
         "--modo",
@@ -133,7 +125,6 @@ def main():
         train_all_models()
         return
 
-    # Si se pide un solo modelo, se ejecuta directamente.
     run_experiment(args.modo)
 
 
