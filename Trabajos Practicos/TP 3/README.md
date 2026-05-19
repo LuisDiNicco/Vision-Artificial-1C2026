@@ -86,9 +86,61 @@ Cada imagen es un archivo `.jpg` de 150×150 píxeles. Las carpetas están organ
 
 ## Cómo Ejecutar
 
+### Configuración del entorno (desde cero, Python 3.12 o inferior)
+
+1) Abrí una terminal en la carpeta del TP 3:
+```bash
+cd "F:\Luis\UNLAM\17º UNLAM DECIMO-TERCER CUATRIMESTRE (1C2026)\Vision Artificial\Vision-Artificial-1C2026\Trabajos Practicos\TP 3"
+```
+
+2) Creá el entorno virtual con Python 3.12:
+```bash
+py -3.12 -m venv .venv
+# Si el comando anterior no existe, usá:
+python -m venv .venv
+```
+
+3) Activá el entorno virtual:
+```bash
+# PowerShell
+\.venv\Scripts\Activate.ps1
+
+# CMD
+\.venv\Scripts\activate
+
+# Git Bash
+source .venv/Scripts/activate
+```
+
+4) Actualizá pip:
+```bash
+python -m pip install --upgrade pip
+```
+
+5) Instalá dependencias:
+```bash
+pip install torch torchvision torchaudio matplotlib scikit-learn
+```
+
+6) Verificá que todo esté bien:
+```bash
+python -c "import torch; print(torch.__version__)"
+```
+
+7) Dataset: descargá el **Intel Image Classification Dataset** y asegurate de que quede así:
+```
+Imaganes de Paisajes/
+├── seg_train/
+└── seg_test/
+```
+
+**Notas rápidas**
+- Si PowerShell bloquea la activación, ejecutá una vez: `Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned`
+- Con Python 3.14, varias dependencias (por ejemplo PyTorch) no tienen ruedas disponibles. Instalá Python 3.12 o 3.11 y repetí los pasos.
+
 ### Requisitos previos
 
-**Version de Python recomendada:** 3.12
+**Version de Python recomendada:** 3.12 (o 3.11)
 
 **Instalación base:**
 ```bash
