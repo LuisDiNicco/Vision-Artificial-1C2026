@@ -3,11 +3,11 @@ from pathlib import Path
 
 from tensorflow import keras
 
-from .tp3_config import EPOCHS, LEARNING_RATE
+from .tp3_config import EPOCHS, LEARNING_RATE, BASE_DIR
 
 
 def train_model(model, train_ds, val_ds, model_name, epochs=EPOCHS):
-    models_dir = Path("modelos_guardados")
+    models_dir = BASE_DIR / "modelos_guardados"
     models_dir.mkdir(parents=True, exist_ok=True)
     final_path = str(models_dir / f"{model_name}.keras")
 
