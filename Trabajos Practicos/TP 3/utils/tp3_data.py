@@ -1,63 +1,79 @@
-import torch
-from torchvision import datasets, transforms
-from torch.utils.data import DataLoader, random_split
+import tensorflow as tf
+from tensorflow import keras
+from keras import layers
 
-from .tp3_config import BATCH_SIZE, IMG_SIZE, TEST_PATH, TRAIN_PATH, USE_PIN_MEMORY, get_num_workers
+from .tp3_config import BATCH_SIZE, IMG_SIZE, TEST_PATH, TRAIN_PATH
 
 
-def build_transforms(use_augmentation: bool):
-    # Normalizacion estandar para imagenes RGB.
-    normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+IMAGENET_MEAN = [0.485, 0.456, 0.406]
+IMAGENET_STD = [0.229, 0.224, 0.225]
 
-    # Transformacion base usada para validacion y test.
-    eval_transform = transforms.Compose([
-        transforms.Resize((IMG_SIZE, IMG_SIZE)),
-        transforms.ToTensor(),
-        normalize,
-    ])
 
-    if not use_augmentation:
-        return eval_transform, eval_transform
+def _normalize(image, label):
+    image = tf.cast(image, tf.float32) / 255.0
+    mean = tf.constant(IMAGENET_MEAN)
+    std = tf.constant(IMAGENET_STD)
+    image = (image - mean) / std
+    return image, label
 
-    # Aumentacion basica para que el modelo vea mas variedad de ejemplos.
-    train_transform = transforms.Compose([
-        transforms.Resize((IMG_SIZE, IMG_SIZE)),
-        transforms.RandomHorizontalFlip(p=0.5),
-        transforms.RandomRotation(15),
-        transforms.RandomAffine(0, translate=(0.1, 0.1), scale=(0.9, 1.1)),
-        transforms.ColorJitter(brightness=0.2, contrast=0.2),
-        transforms.ToTensor(),
-        normalize,
-    ])
 
-    return train_transform, eval_transform
+def _build_augmentation():
+    return keras.Sequential([
+        layers.RandomFlip('horizontal'),
+        layers.RandomRotation(15 / 360),
+        layers.RandomTranslation(0.1, 0.1),
+        layers.RandomZoom((-0.1, 0.1)),
+        layers.RandomBrightness(0.2),
+        layers.RandomContrast(0.2),
+    ], name='augmentation')
+
+
+def _apply_augmentation(augmentation_layer):
+    def apply(image, label):
+        image = augmentation_layer(image, training=True)
+        return image, label
+    return apply
 
 
 def build_loaders(use_augmentation: bool = False, batch_size: int = BATCH_SIZE):
-    # Prepara transforms y carga los datasets desde disco.
-    train_transform, eval_transform = build_transforms(use_augmentation)
-    num_workers = get_num_workers()
+    train_ds = tf.keras.utils.image_dataset_from_directory(
+        str(TRAIN_PATH),
+        image_size=(IMG_SIZE, IMG_SIZE),
+        batch_size=batch_size,
+        label_mode='int',
+        validation_split=0.05,
+        subset='training',
+        seed=42,
+    )
+    val_ds = tf.keras.utils.image_dataset_from_directory(
+        str(TRAIN_PATH),
+        image_size=(IMG_SIZE, IMG_SIZE),
+        batch_size=batch_size,
+        label_mode='int',
+        validation_split=0.05,
+        subset='validation',
+        seed=42,
+    )
+    test_ds = tf.keras.utils.image_dataset_from_directory(
+        str(TEST_PATH),
+        image_size=(IMG_SIZE, IMG_SIZE),
+        batch_size=batch_size,
+        label_mode='int',
+    )
 
-    full_train_dataset = datasets.ImageFolder(TRAIN_PATH, transform=train_transform)
-    test_dataset = datasets.ImageFolder(TEST_PATH, transform=eval_transform)
+    train_ds = train_ds.map(_normalize, num_parallel_calls=tf.data.AUTOTUNE)
+    val_ds = val_ds.map(_normalize, num_parallel_calls=tf.data.AUTOTUNE)
+    test_ds = test_ds.map(_normalize, num_parallel_calls=tf.data.AUTOTUNE)
 
-    # Dividimos entrenamiento en train/val para medir generalizacion.
-    train_size = int(len(full_train_dataset) * 0.95)
-    val_size = len(full_train_dataset) - train_size
-    generator = torch.Generator().manual_seed(42)
-    train_dataset, val_dataset = random_split(full_train_dataset, [train_size, val_size], generator=generator)
+    if use_augmentation:
+        augmentation = _build_augmentation()
+        train_ds = train_ds.map(
+            _apply_augmentation(augmentation),
+            num_parallel_calls=tf.data.AUTOTUNE,
+        )
 
-    loader_kwargs = {
-        "batch_size": batch_size,
-        "num_workers": num_workers,
-        "pin_memory": USE_PIN_MEMORY,
-    }
-    if num_workers > 0:
-        loader_kwargs["persistent_workers"] = True
-        loader_kwargs["prefetch_factor"] = 2
+    train_ds = train_ds.shuffle(10000).prefetch(tf.data.AUTOTUNE)
+    val_ds = val_ds.prefetch(tf.data.AUTOTUNE)
+    test_ds = test_ds.prefetch(tf.data.AUTOTUNE)
 
-    train_loader = DataLoader(train_dataset, shuffle=True, **loader_kwargs)
-    val_loader = DataLoader(val_dataset, shuffle=False, **loader_kwargs)
-    test_loader = DataLoader(test_dataset, shuffle=False, **loader_kwargs)
-
-    return train_loader, val_loader, test_loader
+    return train_ds, val_ds, test_ds
