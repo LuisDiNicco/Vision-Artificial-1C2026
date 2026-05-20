@@ -19,6 +19,8 @@ def ModeloBase(num_classes=NUM_CLASSES):
     return keras.Sequential([
         # Input: imagen 150x150 RGB
         layers.Input(shape=(IMG_SIZE, IMG_SIZE, 3)),
+        # Normaliza a [0,1] dentro del modelo
+        layers.Rescaling(1.0 / 255),
         # 3 bloques convolucionales con incremento de filtros
         *_conv_block(32),
         *_conv_block(64),
@@ -38,6 +40,8 @@ def ModeloOptimizado(num_classes=NUM_CLASSES):
     return keras.Sequential([
         # Input: imagen 150x150 RGB
         layers.Input(shape=(IMG_SIZE, IMG_SIZE, 3)),
+        # Normaliza a [0,1] dentro del modelo
+        layers.Rescaling(1.0 / 255),
         # 4 bloques convolucionales (uno mas que modelo base)
         *_conv_block(32),
         *_conv_block(64),

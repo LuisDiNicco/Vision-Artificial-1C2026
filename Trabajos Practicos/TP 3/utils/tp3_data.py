@@ -4,22 +4,6 @@ from keras import layers
 
 from .tp3_config import BATCH_SIZE, IMG_SIZE, TEST_PATH, TRAIN_PATH
 
-# Normalizacion ImageNet (media y desvio estandar de ImageNet)
-# Estos valores se usan para normalizar imagenes como si vinieran del dataset ImageNet
-IMAGENET_MEAN = [0.485, 0.456, 0.406]
-IMAGENET_STD = [0.229, 0.224, 0.225]
-
-
-# Normaliza imagenes: escala a [0,1] y luego aplica normalizacion ImageNet
-def _normalize(image, label):
-    # Convierte a float32 y escala [0, 255] -> [0, 1]
-    image = tf.cast(image, tf.float32) / 255.0
-    # Aplica normalizacion ImageNet
-    mean = tf.constant(IMAGENET_MEAN)
-    std = tf.constant(IMAGENET_STD)
-    image = (image - mean) / std
-    return image, label
-
 
 # Construye pipeline de data augmentation
 # Aplica transformaciones aleatorias para aumentar variedad en datos de entrenamiento
@@ -80,10 +64,7 @@ def build_loaders(use_augmentation: bool = False, batch_size: int = BATCH_SIZE):
         label_mode='int',
     )
 
-    # Aplica normalizacion a todos los datasets
-    train_ds = train_ds.map(_normalize, num_parallel_calls=tf.data.AUTOTUNE)
-    val_ds = val_ds.map(_normalize, num_parallel_calls=tf.data.AUTOTUNE)
-    test_ds = test_ds.map(_normalize, num_parallel_calls=tf.data.AUTOTUNE)
+    # No normalizamos aca: el modelo incluye Rescaling(1/255)
 
     # Si se pide, aplica augmentation solo a train_ds
     if use_augmentation:

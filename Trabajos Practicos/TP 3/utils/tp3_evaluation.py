@@ -15,9 +15,6 @@ from .tp3_config import (
     IMG_SIZE,
     TEST_PATH,
 )
-from .tp3_data import IMAGENET_MEAN, IMAGENET_STD
-
-
 # Carga un modelo entrenado desde disco
 def load_model(model_path):
     if not os.path.exists(model_path):
@@ -29,11 +26,8 @@ def load_model(model_path):
 def _preprocess_image(image):
     # Redimensiona a IMG_SIZE x IMG_SIZE
     image = tf.image.resize(image, (IMG_SIZE, IMG_SIZE))
-    # Normaliza: escala a [0,1] y aplica normalizacion ImageNet
-    image = tf.cast(image, tf.float32) / 255.0
-    mean = tf.constant(IMAGENET_MEAN)
-    std = tf.constant(IMAGENET_STD)
-    image = (image - mean) / std
+    # Convierte a float32; el modelo hace Rescaling(1/255)
+    image = tf.cast(image, tf.float32)
     return image
 
 
@@ -78,11 +72,8 @@ def evaluate_dataset(model):
 
     # Itera sobre todos los batches
     for images, labels in test_ds:
-        # Normaliza imagenes
-        images = tf.cast(images, tf.float32) / 255.0
-        mean = tf.constant(IMAGENET_MEAN)
-        std = tf.constant(IMAGENET_STD)
-        images = (images - mean) / std
+        # Convierte a float32; el modelo hace Rescaling(1/255)
+        images = tf.cast(images, tf.float32)
 
         # Realiza predicciones
         outputs = model(images, training=False)
