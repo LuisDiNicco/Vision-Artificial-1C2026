@@ -1,20 +1,42 @@
 import tensorflow as tf
 from tensorflow import keras
-from keras import layers
+from keras import layers, regularizers
 
 from utils.tp3_config import IMG_SIZE, NUM_CLASSES
 
+# Optimizaciones usadas en ambos modelos:
+# - Rescaling: normaliza entradas a [0,1]
+# - BatchNormalization: estabiliza el entrenamiento
+# - Dropout: reduce overfitting
+# - L2: penaliza pesos grandes (regularizacion)
 
-# Bloque convolucional basico: Conv2D + MaxPooling (reduce spatial size)
+# Regularizacion L2 suave para evitar overfitting
+L2_FACTOR = 1e-4
+
+
+# Bloque convolucional basico: Conv2D + BatchNorm + MaxPooling
+# - Conv2D extrae features
+# - BatchNorm estabiliza activaciones
+# - MaxPooling reduce tamaño espacial
 def _conv_block(filters):
     return [
-        layers.Conv2D(filters, 3, padding='same', activation='relu'),
+        layers.Conv2D(
+            filters,
+            3,
+            padding='same',
+            activation='relu',
+            kernel_regularizer=regularizers.l2(L2_FACTOR),
+        ),
+        # Normaliza activaciones para entrenamiento mas estable
+        layers.BatchNormalization(),
+        # Reduce a la mitad el tamaño (downsampling)
         layers.MaxPooling2D(2),
     ]
 
 
-# Modelo base con 3 bloques convolucionales para comparacion
-# Arquitectura: Conv32 -> Conv64 -> Conv128 -> Dense64 -> Output
+    # Modelo base (menos capacidad, menor riesgo de overfitting)
+    # Arquitectura: Conv32 -> Conv64 -> Conv128 -> Dense64 -> Output
+    # Diferencia clave: 3 bloques conv y densa mas chica
 def ModeloBase(num_classes=NUM_CLASSES):
     return keras.Sequential([
         # Input: imagen 150x150 RGB
@@ -28,14 +50,20 @@ def ModeloBase(num_classes=NUM_CLASSES):
         # Reduce caracteristicas a un vector 1D
         layers.GlobalAveragePooling2D(),
         # Capas densas para clasificacion
-        layers.Dense(64, activation='relu'),
-        layers.Dense(num_classes),
+        layers.Dense(64, activation='relu', kernel_regularizer=regularizers.l2(L2_FACTOR)),
+        # Dropout leve para reducir overfitting
+        layers.Dropout(0.2),
+        # Capa final (logits) para clasificacion multiclase
+        layers.Dense(num_classes, kernel_regularizer=regularizers.l2(L2_FACTOR)),
     ], name='modelo_base')
 
 
-# Modelo optimizado con 4 bloques convolucionales y mas parametros
-# Arquitectura: Conv32 -> Conv64 -> Conv128 -> Conv256 -> Dense128 -> Output
-# Mejoras: mas capas convolucionales y mas neuronas en capas densas
+    # Modelo optimizado (mas capacidad + regularizacion)
+    # Arquitectura: Conv32 -> Conv64 -> Conv128 -> Conv256 -> Dense128 -> Output
+    # Diferencias clave vs base:
+    # - 1 bloque conv extra (256 filtros)
+    # - Densa mas grande (128 vs 64)
+    # - Dropout mas alto (0.3 vs 0.2)
 def ModeloOptimizado(num_classes=NUM_CLASSES):
     return keras.Sequential([
         # Input: imagen 150x150 RGB
@@ -50,6 +78,13 @@ def ModeloOptimizado(num_classes=NUM_CLASSES):
         # Reduce caracteristicas a un vector 1D
         layers.GlobalAveragePooling2D(),
         # Capas densas mas grandes
-        layers.Dense(128, activation='relu'),  # 128 neuronas (vs 64 en base)
-        layers.Dense(num_classes),
+        layers.Dense(
+            128,
+            activation='relu',
+            kernel_regularizer=regularizers.l2(L2_FACTOR),
+        ),  # 128 neuronas (vs 64 en base)
+        # Dropout mas alto por tener mas capacidad
+        layers.Dropout(0.3),
+        # Capa final (logits) para clasificacion multiclase
+        layers.Dense(num_classes, kernel_regularizer=regularizers.l2(L2_FACTOR)),
     ], name='modelo_optimizado')

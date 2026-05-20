@@ -17,10 +17,10 @@ def _build_augmentation():
         layers.RandomTranslation(0.1, 0.1),
         # Escala imagenes entre -10% y +10%
         layers.RandomZoom((-0.1, 0.1)),
-        # Ajusta brillo +-20%
-        layers.RandomBrightness(0.2),
-        # Ajusta contraste +-20%
-        layers.RandomContrast(0.2),
+        # Ajusta brillo +-10% (mas suave)
+        layers.RandomBrightness(0.1),
+        # Ajusta contraste +-10% (mas suave)
+        layers.RandomContrast(0.1),
     ], name='augmentation')
 
 

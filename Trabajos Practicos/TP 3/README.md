@@ -21,16 +21,18 @@ Se implementaron **3 variantes del mismo problema** para comparar resultados:
 #### 1. **Modelo Base**
 - Es la versión más simple.
 - Sirve como línea base para comparar.
+- Incluye normalización dentro del modelo (Rescaling), BatchNorm, Dropout y L2 suave.
 
 #### 2. **Modelo con Augmentation (Data)**
 - Mantiene la misma estructura del modelo base.
 - Cambia la forma de entrenar usando imágenes modificadas levemente para que el modelo vea más ejemplos.
 - Ayuda a que generalice mejor.
-- Aumentaciones usadas: flip horizontal, rotación leve, traslación y zoom.
+- Aumentaciones usadas: flip horizontal, rotación leve, traslación, zoom, brillo y contraste (suaves).
 
 #### 3. **Modelo Optimizado**
 - Es la versión más completa.
 - Usa una red más profunda (más capas convolucionales) y está pensada para dar mejores resultados que las dos anteriores.
+- Diferencias clave: un bloque conv extra, capa densa más grande y Dropout más alto.
 - Permite ver si una arquitectura más fuerte mejora la evaluación final.
 
 ---
@@ -41,7 +43,7 @@ Se armó un flujo completo: cargar el dataset, entrenar varios modelos, guardar 
 
 **Justificación de decisiones**
 - **Tipo de modelo**: se eligió una CNN porque extrae características visuales con capas convolucionales y luego clasifica con capas totalmente conectadas, que es la estructura estándar para clasificación de imágenes.
-- **Preprocesamiento**: todas las imágenes se redimensionan a un tamaño fijo y se normalizan por canal para estabilizar el entrenamiento y mantener la escala de los valores.
+- **Preprocesamiento**: todas las imágenes se redimensionan a un tamaño fijo y se reescalan a [0,1] dentro del modelo (Rescaling) para mantener la escala de los valores.
 - **Separación de datos**: se divide el conjunto de entrenamiento en entrenamiento (95%) y validación (5%), y el conjunto de prueba queda aparte para evaluar al final.
 - **Entrenamiento**: se usa una función de pérdida de clasificación multiclase y optimización con SGD, registrando accuracy y loss por época para ver la evolución.
 - **Criterio de corte**: se aplica early stopping cuando la pérdida de validación deja de mejorar para evitar sobreentrenamiento innecesario.
@@ -50,6 +52,7 @@ Se armó un flujo completo: cargar el dataset, entrenar varios modelos, guardar 
 - **Aumentación**: se generan variantes de las imágenes (flip, rotación, traslación, zoom, brillo y contraste) para aumentar la diversidad del dataset y mejorar la generalización.
 - **Modelo más profundo**: la versión optimizada agrega más bloques convolucionales para capturar patrones de mayor nivel.
 - **SGD con momentum**: agrega inercia al ajuste de pesos para estabilizar el descenso del error.
+- **Regularización**: se usa BatchNorm + Dropout + L2 suave para reducir overfitting.
 
 En la evaluación se generan la matriz de confusión, las métricas por clase y ejemplos de predicciones para mostrar si el modelo aprendió a distinguir las categorías.
 
@@ -80,27 +83,27 @@ Imaganes de Paisajes/
 
 **Total:** ~14,600 imágenes (12,800 de entrenamiento + 1,800 de prueba)
 
-Cada imagen es un archivo `.jpg` de 150×150 píxeles. Las carpetas están organizadas por clase, lo que permite a `torchvision.datasets.ImageFolder` cargarlas automáticamente.
+Cada imagen es un archivo `.jpg` de 150×150 píxeles. Las carpetas están organizadas por clase, lo que permite a `tf.keras.utils.image_dataset_from_directory` cargarlas automáticamente.
 
 ---
 
 ## Cómo Ejecutar
 
-### Configuración del entorno (desde cero, Python 3.12 o inferior)
+### Configuración del entorno (desde cero, Python 3.11 recomendado)
 
-1) Abrí una terminal en la carpeta del TP 3:
+1) Abrí una terminal en la carpeta del TP 3 (esto deja todo apuntando al TP):
 ```bash
-cd "F:\Luis\UNLAM\17º UNLAM DECIMO-TERCER CUATRIMESTRE (1C2026)\Vision Artificial\Vision-Artificial-1C2026\Trabajos Practicos\TP 3"
+cd "/ruta/a/tu/proyecto/Trabajos Practicos/TP 3"
 ```
 
-2) Creá el entorno virtual con Python 3.12:
+2) Creá el entorno virtual con Python 3.11 (es la versión más compatible con TensorFlow):
 ```bash
-py -3.12 -m venv .venv
+py -3.11 -m venv .venv
 # Si el comando anterior no existe, usá:
 python -m venv .venv
 ```
 
-3) Activá el entorno virtual:
+3) Activá el entorno virtual (así instalás todo solo para este TP):
 ```bash
 # PowerShell
 \.venv\Scripts\Activate.ps1
@@ -112,19 +115,19 @@ python -m venv .venv
 source .venv/Scripts/activate
 ```
 
-4) Actualizá pip:
+4) Actualizá pip (evita problemas de instalación):
 ```bash
 python -m pip install --upgrade pip
 ```
 
 5) Instalá dependencias:
 ```bash
-pip install torch torchvision torchaudio matplotlib scikit-learn
+pip install tensorflow matplotlib scikit-learn seaborn pillow
 ```
 
 6) Verificá que todo esté bien:
 ```bash
-python -c "import torch; print(torch.__version__)"
+python -c "import tensorflow as tf; print(tf.__version__)"
 ```
 
 7) Dataset: descargá el **Intel Image Classification Dataset** y asegurate de que quede así:
@@ -136,15 +139,16 @@ Imaganes de Paisajes/
 
 **Notas rápidas**
 - Si PowerShell bloquea la activación, ejecutá una vez: `Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned`
-- Con Python 3.14, varias dependencias (por ejemplo PyTorch) no tienen ruedas disponibles. Instalá Python 3.12 o 3.11 y repetí los pasos.
+- Con Python 3.14, varias dependencias (por ejemplo TensorFlow) no tienen paquetes precompilados y falla la instalación. Usá Python 3.11.
+- Si en tu PC ya tenés 3.12 y TensorFlow falla al instalar, pasate a 3.11.
 
 ### Requisitos previos
 
-**Version de Python recomendada:** 3.12 (o 3.11)
+**Version de Python recomendada:** 3.11
 
 **Instalación base:**
 ```bash
-pip install torch torchvision torchaudio matplotlib scikit-learn
+pip install tensorflow matplotlib scikit-learn seaborn pillow
 ```
 
 ### Entrenar los modelos
@@ -164,7 +168,7 @@ python entrenador.py --modo optimized     # Solo modelo optimizado
 ```
 
 El script:
-- Guarda el mejor modelo en `modelo_base.pt`, `modelo_augmentation.pt`, `modelo_optimizado.pt`
+- Guarda el mejor modelo en `modelo_base.keras`, `modelo_augmentation.keras`, `modelo_optimizado.keras`
 - Genera gráficos y métricas en `salida entrenamiento/`
 - Guarda el resumen general en `salida entrenamiento/resultados_entrenamiento.json`
 - Usa early stopping como criterio simple de terminación si la pérdida de validación deja de mejorar
@@ -185,10 +189,9 @@ Genera:
 Entrenando modelo_base
 Optimizador: SGD
 
-Epoca 1/20 | train 0.5200/1.4500 | val 0.6000/1.2200 | lr 1.00e-03
-Epoca 2/20 | train 0.6400/1.1000 | val 0.6800/1.0000 | lr 1.00e-03
+Epoch 1/50
 ...
-Epoca 20/20 | train 0.8800/0.4500 | val 0.8400/0.5500 | lr 1.00e-03
+Epoch 50/50
 
 Test Accuracy: 0.84
 ```
@@ -214,9 +217,9 @@ Test Accuracy: 0.84
 Todos se generan automáticamente al ejecutar los scripts:
 
 **Modelos entrenados** (guardados en `modelos_guardados/`):
-- `modelo_base.pt` - Mejor modelo base entrenado
-- `modelo_augmentation.pt` - Mejor modelo con augmentation
-- `modelo_optimizado.pt` - Mejor modelo optimizado
+- `modelo_base.keras` - Mejor modelo base entrenado
+- `modelo_augmentation.keras` - Mejor modelo con augmentation
+- `modelo_optimizado.keras` - Mejor modelo optimizado
 
 **Métricas y gráficos**:
 - `salida entrenamiento/resultados_entrenamiento.json` - Métricas de cada modelo en formato JSON
@@ -240,6 +243,6 @@ Todos se generan automáticamente al ejecutar los scripts:
 
 ## Notas Importantes
 
-- El dataset está organizado por carpetas, así que `ImageFolder` puede leerlo directamente.
+- El dataset está organizado por carpetas, así que `image_dataset_from_directory` puede leerlo directamente.
 - El entrenamiento guarda el mejor estado encontrado durante la ejecución.
 - Los archivos de salida quedan separados en carpetas para no mezclar resultados de entrenamiento con evaluación.
