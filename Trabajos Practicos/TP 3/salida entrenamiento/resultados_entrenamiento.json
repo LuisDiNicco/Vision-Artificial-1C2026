@@ -1,20 +1,20 @@
 [
   {
     "nombre": "modelo_base",
-    "test_acc": 0.847000002861023,
-    "test_loss": 0.4352482855319977,
-    "epochs": 50
+    "test_acc": 0.8546666502952576,
+    "test_loss": 0.43526995182037354,
+    "epochs": 20
   },
   {
     "nombre": "modelo_augmentation",
-    "test_acc": 0.42766666412353516,
-    "test_loss": 1.364861011505127,
-    "epochs": 32
+    "test_acc": 0.6816666722297668,
+    "test_loss": 0.8052865266799927,
+    "epochs": 8
   },
   {
     "nombre": "modelo_optimizado",
-    "test_acc": 0.3176666796207428,
-    "test_loss": 1.4813393354415894,
-    "epochs": 25
+    "test_acc": 0.722000002861023,
+    "test_loss": 0.7950842380523682,
+    "epochs": 7
   }
 ]

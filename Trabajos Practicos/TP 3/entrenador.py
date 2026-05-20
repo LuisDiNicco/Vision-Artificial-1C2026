@@ -7,7 +7,7 @@ from models.tp3_models import ModeloBase, ModeloOptimizado
 from utils.tp3_config import MODEL_PATHS, TRAIN_OUTPUT_DIR
 from utils.tp3_data import build_loaders
 from utils.tp3_history import plot_history, save_history
-from utils.tp3_evaluation import evaluate_dataset, show_random_predictions
+from utils.tp3_evaluation import evaluate_dataset, load_model, show_random_predictions
 from utils.tp3_training import evaluate_saved_model, train_model
 
 
@@ -86,7 +86,20 @@ def run_experiment(mode, run_demo=True):
 
     # Paso 3: Entrenar el modelo y guardar el historial
     print_step(3, "Entrenar y registrar metricas (accuracy y loss)")
-    history = train_model(model, train_ds, val_ds, model_name)
+    history = train_model(
+        model,
+        train_ds,
+        val_ds,
+        model_name,
+        use_early_stopping=(mode == "base"),
+    )
+
+    # Carga el mejor modelo guardado para evaluar y mostrar resultados
+    best_model_path = MODEL_PATHS[mode]
+    if best_model_path.exists():
+        model = load_model(str(best_model_path))
+    else:
+        print(f"No se encontro {best_model_path.name}. Se usa el ultimo modelo en memoria.")
 
     # Paso 4: Evaluar el modelo con datos de test
     print_step(4, "Evaluar con el conjunto de test")

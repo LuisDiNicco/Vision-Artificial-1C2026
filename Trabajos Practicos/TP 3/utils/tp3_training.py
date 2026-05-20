@@ -7,7 +7,8 @@ from .tp3_config import EPOCHS, LEARNING_RATE, BASE_DIR
 
 
 # Entrena un modelo y guarda el mejor segun loss de validacion
-def train_model(model, train_ds, val_ds, model_name, epochs=EPOCHS):
+
+def train_model(model, train_ds, val_ds, model_name, epochs=EPOCHS, use_early_stopping=True):
     # Crea directorio para guardar modelos
     models_dir = BASE_DIR / "modelos_guardados"
     models_dir.mkdir(parents=True, exist_ok=True)
@@ -23,22 +24,27 @@ def train_model(model, train_ds, val_ds, model_name, epochs=EPOCHS):
     )
 
     # Callbacks durante el entrenamiento
-    callbacks = [
+    callbacks = []
+    if use_early_stopping:
         # Early stopping: para si el loss de validacion no mejora (paciencia=4 epocas)
-        keras.callbacks.EarlyStopping(
-            monitor='val_loss',
-            patience=4,
-            restore_best_weights=True,
-            verbose=1,
-        ),
-        # Model checkpoint: guarda el modelo cada vez que mejora val_loss
+        callbacks.append(
+            keras.callbacks.EarlyStopping(
+                monitor='val_loss',
+                patience=4,
+                restore_best_weights=True,
+                verbose=1,
+            )
+        )
+
+    # Model checkpoint: guarda el modelo cada vez que mejora val_loss
+    callbacks.append(
         keras.callbacks.ModelCheckpoint(
             final_path,
             monitor='val_loss',
             save_best_only=True,
             verbose=0,
-        ),
-    ]
+        )
+    )
 
     print(f"\nEntrenando {model_name}")
     print("Optimizador: SGD")
