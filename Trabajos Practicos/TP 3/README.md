@@ -170,7 +170,7 @@ python entrenador.py --modo optimized     # Solo modelo optimizado
 El script:
 - Guarda el mejor modelo en `modelo_base.keras`, `modelo_augmentation.keras`, `modelo_optimizado.keras`
 - Genera gráficos y métricas en `salida entrenamiento/`
-- Guarda el resumen general en `salida entrenamiento/resultados_entrenamiento.json`
+- Guarda el resumen general en `salida entrenamiento/resultados_entrenamiento.json` (mejores valores de validación por modelo)
 - Usa early stopping como criterio simple de terminación si la pérdida de validación deja de mejorar
 
 ### Evaluar los modelos
@@ -207,8 +207,10 @@ Test Accuracy: 0.84
 | `tp3_models.py` | `models/` | Define la arquitectura del modelo base y optimizado |
 | `tp3_data.py` | `utils/` | Carga datos y aplica transformaciones |
 | `tp3_training.py` | `utils/` | Lógica de entrenamiento, validación y generación de gráficos |
+| `tp3_history.py` | `utils/` | Guarda y grafica métricas de entrenamiento |
 | `tp3_config.py` | `utils/` | Rutas, constantes y configuración global |
 | `device_utils.py` | `utils/runtime/` | Utilidades de ejecución (dispositivo y carga segura) |
+| `diagnostico_gpu.py` | `utils/runtime/` | Script opcional para revisar GPU/CPU y TensorFlow |
 
 ---
 
@@ -238,6 +240,16 @@ Todos se generan automáticamente al ejecutar los scripts:
 3. Se guardan los pesos del mejor modelo en `modelos_guardados/`.
 4. Se generan archivos de salida separados para entrenamiento y evaluación.
 5. Se usa esa información para explicar el desempeño del sistema frente a la consigna.
+
+---
+
+## Analisis y Observaciones
+
+- Con los mejores valores de validación, el modelo optimizado logra la mayor precisión y la menor pérdida.
+- El modelo con augmentation mejora claramente cuando se elige su mejor época, aunque la curva es más ruidosa.
+- El modelo base mantiene estabilidad, pero queda por debajo de los mejores puntos de los otros dos.
+- La particion 95/5 favorece mas datos de entrenamiento, pero una validacion mas grande (10-15%) suele dar metricas mas estables.
+- Los resultados pueden variar segun la semilla y el hardware; el resumen refleja la ultima corrida guardada y el mejor punto de validacion.
 
 ---
 
