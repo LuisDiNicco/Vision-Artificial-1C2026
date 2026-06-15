@@ -1,0 +1,14 @@
+opencv-python
+mediapipe
+scikit-learn
+joblib
+numpy>=1.26,<2.2; python_version < "3.13"
+numpy; python_version >= "3.13"
+
+# ArcFace depende de TensorFlow, que no tiene wheel estable para Python 3.14.
+# Para ejecutar el TP completo usar Python 3.10, 3.11 o 3.12.
+tensorflow>=2.16,<2.20; python_version < "3.13"
+tf-keras>=2.16,<2.20; python_version < "3.13"
+arcface==0.0.8; python_version < "3.13"
+astropy>=6.0; python_version < "3.13"
+deepface>=0.0.100; python_version < "3.13"
