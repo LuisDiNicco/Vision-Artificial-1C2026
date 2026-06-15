@@ -182,3 +182,17 @@ def save_classifier(classifier: FaceSVMClassifier, path: Path) -> None:
 
 def load_classifier(path: Path) -> FaceSVMClassifier:
     return joblib.load(path)
+
+
+def try_load_classifier(path: Path) -> Tuple[Optional[FaceSVMClassifier], Optional[str]]:
+    if not path.exists():
+        return None, "Todavia no hay modelo entrenado."
+    try:
+        return load_classifier(path), None
+    except ModuleNotFoundError as exc:
+        return None, (
+            "El modelo fue entrenado con una estructura vieja de archivos. "
+            "Reentrena con los embeddings guardados para regenerarlo."
+        )
+    except Exception as exc:
+        return None, f"No se pudo cargar el modelo: {exc}"

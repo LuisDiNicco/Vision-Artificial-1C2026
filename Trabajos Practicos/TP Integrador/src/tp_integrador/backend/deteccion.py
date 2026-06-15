@@ -8,6 +8,11 @@ import cv2
 import mediapipe as mp
 import numpy as np
 
+from .logging_config import configure_absl_logs
+
+
+configure_absl_logs()
+
 
 @dataclass
 class FaceDetection:

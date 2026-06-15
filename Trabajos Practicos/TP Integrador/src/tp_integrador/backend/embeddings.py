@@ -7,15 +7,15 @@ class ArcFaceEmbedder:
     """Extrae embeddings ArcFace de 512 dimensiones.
 
     Backends disponibles:
-    - auto: prueba arcface directo y cae a DeepFace si el modelo de arcface no esta disponible.
+    - auto: usa DeepFace con ArcFace, que es el backend mas robusto en Python moderno.
     - arcface: biblioteca `arcface` del material de clase.
     - deepface: DeepFace con model_name="ArcFace".
 
-    Se elige con TP_FACE_EMBEDDER=auto|arcface|deepface. Por defecto usa auto.
+    Se elige con TP_FACE_EMBEDDER=auto|arcface|deepface. Por defecto usa deepface.
     """
 
     def __init__(self) -> None:
-        requested_backend = os.environ.get("TP_FACE_EMBEDDER", "auto").strip().lower()
+        requested_backend = os.environ.get("TP_FACE_EMBEDDER", "deepface").strip().lower()
         if requested_backend not in {"auto", "arcface", "deepface"}:
             raise ValueError("TP_FACE_EMBEDDER debe ser 'auto', 'arcface' o 'deepface'.")
 
@@ -27,11 +27,7 @@ class ArcFaceEmbedder:
             self._init_arcface()
             return
 
-        try:
-            self._init_arcface()
-        except RuntimeError as exc:
-            print(f"No se pudo usar arcface directo ({exc}). Usando DeepFace con ArcFace...")
-            self._init_deepface()
+        self._init_deepface()
 
     def _init_arcface(self) -> None:
         try:

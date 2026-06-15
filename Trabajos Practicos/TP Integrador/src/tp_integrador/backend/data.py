@@ -61,6 +61,11 @@ def load_embeddings() -> Tuple[np.ndarray, List[str]]:
     return np.vstack(embeddings), labels
 
 
+def count_embeddings_for_person(name: str) -> int:
+    slug = person_slug(name)
+    return sum(1 for _ in (EMBEDDINGS_DIR / slug).glob("*.npz"))
+
+
 def write_public_summary() -> None:
     SUMMARY_PATH.parent.mkdir(parents=True, exist_ok=True)
     summary = {}
