@@ -110,7 +110,9 @@ TP Integrador/
 │           └── video_overlay.py     # Anotaciones dibujadas sobre el video
 ├── datos/
 │   └── resumen_embeddings.json      # Resumen no sensible de muestras registradas
-├── datos_privados/                  # Embeddings y fotos opcionales (ignorado por Git)
+├── datos_privados/                  # Embeddings propios y fotos opcionales (ignorado por Git)
+├── cache/
+│   └── famosos/                     # Cache offline del dataset de famosos (ignorado por Git)
 │   ├── embeddings/
 │   └── fotos/
 ├── modelo/
@@ -191,7 +193,7 @@ Los logs informativos de TensorFlow/TFLite/MediaPipe se silencian al iniciar la 
 
 ### Doble famoso
 
-El dataset `ares1123/celebrity_dataset` se procesa una sola vez en modo offline. El script descarga el split `train`, alinea cada rostro, calcula embeddings ArcFace por foto y guarda un cache comprimido en `datos_privados/celebrity_dataset/celebrity_arcface_index.npz`.
+El dataset `ares1123/celebrity_dataset` se procesa una sola vez en modo offline. El script descarga el split `train`, alinea cada rostro, calcula embeddings ArcFace por foto y guarda un cache comprimido en `cache/famosos/celebrity_arcface_index.npz`.
 
 ```powershell
 python cache_celebrity_embeddings.py
@@ -229,7 +231,7 @@ Opciones razonables para una evolucion:
 ## Optimizaciones de precisión
 
 - **Alineamiento antes del embedding:** los landmarks de MediaPipe se usan para rotar, escalar y centrar la cara antes de ArcFace/DeepFace.
-- **Plantilla ArcFace de 5 puntos:** cuando hay landmarks suficientes, el alineamiento usa ojos, nariz y comisuras de boca con una transformación de similitud hacia la plantilla 112x112 habitual de ArcFace.
+- **Alineamiento DeepFace cuando corresponde:** con el backend por defecto, MediaPipe localiza la cara y DeepFace hace el alineamiento interno antes de ArcFace. La plantilla manual de 5 puntos queda como fallback para `TP_FACE_EMBEDDER=arcface`.
 - **Filtro de calidad:** no se guardan muestras demasiado chicas, borrosas, oscuras, sobreexpuestas o cortadas por el borde.
 - **Comparación contra embeddings reales:** además del centroide por persona, el clasificador conserva los embeddings registrados y compara contra el vecino más cercano.
 - **Confianza calibrada:** el porcentaje ya no depende solamente de `predict_proba` del SVM; se calcula con la distancia real respecto de la variación interna de cada persona.

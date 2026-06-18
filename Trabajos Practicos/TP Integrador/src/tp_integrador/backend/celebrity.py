@@ -5,13 +5,13 @@ from typing import Iterable, List, Optional
 import cv2
 import numpy as np
 
-from .alineamiento import align_face
 from .data import BASE_DIR
 from .deteccion import MediaPipeFaceDetector, largest_face
+from .face_quality import assess_face_quality
 
 
 CELEBRITY_DATASET = "ares1123/celebrity_dataset"
-CELEBRITY_CACHE_DIR = BASE_DIR / "datos_privados" / "celebrity_dataset"
+CELEBRITY_CACHE_DIR = BASE_DIR / "cache" / "famosos"
 CELEBRITY_IMAGES_DIR = CELEBRITY_CACHE_DIR / "images"
 CELEBRITY_INDEX_PATH = CELEBRITY_CACHE_DIR / "celebrity_arcface_index.npz"
 
@@ -22,6 +22,7 @@ class CelebrityMatch:
     similarity: float
     distance: float
     image_path: Path
+    samples: int = 1
 
 
 class CelebrityIndex:
@@ -31,11 +32,19 @@ class CelebrityIndex:
         names: List[str],
         image_paths: List[Path],
         counts: Optional[List[int]] = None,
+        sample_embeddings: Optional[np.ndarray] = None,
+        sample_names: Optional[List[str]] = None,
+        sample_image_paths: Optional[List[Path]] = None,
+        sample_person_ids: Optional[np.ndarray] = None,
     ) -> None:
         self.embeddings = embeddings.astype(np.float32)
         self.names = names
         self.image_paths = image_paths
         self.counts = counts or [1] * len(names)
+        self.sample_embeddings = sample_embeddings
+        self.sample_names = sample_names or []
+        self.sample_image_paths = sample_image_paths or []
+        self.sample_person_ids = sample_person_ids
 
     @classmethod
     def load(cls, path: Path = CELEBRITY_INDEX_PATH) -> "CelebrityIndex":
@@ -46,6 +55,12 @@ class CelebrityIndex:
                 names=[str(item) for item in data["person_names"]],
                 image_paths=[Path(str(item)) for item in data["person_image_paths"]],
                 counts=[int(item) for item in data["person_counts"]],
+                sample_embeddings=data["embeddings"].astype(np.float32),
+                sample_names=[str(item) for item in data["names"]],
+                sample_image_paths=[Path(str(item)) for item in data["image_paths"]],
+                sample_person_ids=data["sample_person_ids"].astype(np.int32)
+                if "sample_person_ids" in data
+                else None,
             )
 
         sample_embeddings = data["embeddings"].astype(np.float32)
@@ -83,10 +98,27 @@ class CelebrityIndex:
             seen.add(name)
             similarity = float(similarities[int(idx)])
             distance = float(np.sqrt(max(0.0, 2.0 - 2.0 * similarity)))
-            matches.append(CelebrityMatch(name, similarity, distance, self.image_paths[int(idx)]))
+            matches.append(
+                CelebrityMatch(
+                    name,
+                    similarity,
+                    distance,
+                    self.image_paths[int(idx)],
+                    self.counts[int(idx)],
+                )
+            )
             if len(matches) >= limit:
                 break
         return matches
+
+    def sample_embeddings_for_person(self, name: str) -> np.ndarray:
+        if self.sample_embeddings is None:
+            return np.empty((0, 512), dtype=np.float32)
+        if self.sample_person_ids is not None and name in self.names:
+            person_id = self.names.index(name)
+            return self.sample_embeddings[self.sample_person_ids == person_id]
+        mask = np.array(self.sample_names) == name
+        return self.sample_embeddings[mask]
 
 
 def save_celebrity_index(
@@ -98,6 +130,8 @@ def save_celebrity_index(
     path.parent.mkdir(parents=True, exist_ok=True)
     matrix = np.vstack(embeddings).astype(np.float32) if embeddings else np.empty((0, 512), dtype=np.float32)
     person_embeddings, person_names, person_image_paths, person_counts = _aggregate_people(matrix, names, image_paths)
+    person_id_by_name = {name: idx for idx, name in enumerate(person_names)}
+    sample_person_ids = np.array([person_id_by_name[name] for name in names], dtype=np.int32)
     np.savez_compressed(
         path,
         embeddings=matrix,
@@ -107,6 +141,7 @@ def save_celebrity_index(
         person_names=np.array(person_names, dtype=str),
         person_image_paths=np.array([str(item) for item in person_image_paths], dtype=str),
         person_counts=np.array(person_counts, dtype=np.int32),
+        sample_person_ids=sample_person_ids,
     )
 
 
@@ -158,11 +193,12 @@ def build_celebrity_cache(
             face = largest_face(detections)
             if face is None:
                 continue
+            if not assess_face_quality(image_bgr, face).ok:
+                continue
 
-            aligned = align_face(image_bgr, face)
-            embedding = embedder.embed(aligned)
+            embedding, aligned = embedder.embed_face(image_bgr, face)
             image_path = CELEBRITY_IMAGES_DIR / f"{len(embeddings):06d}.jpg"
-            cv2.imwrite(str(image_path), aligned)
+            _write_jpg(image_path, aligned)
 
             embeddings.append(embedding)
             names.append(name)
@@ -178,7 +214,18 @@ def build_celebrity_cache(
     save_celebrity_index(embeddings, names, image_paths)
     matrix = np.vstack(embeddings).astype(np.float32) if embeddings else np.empty((0, 512), dtype=np.float32)
     person_embeddings, person_names, person_image_paths, person_counts = _aggregate_people(matrix, names, image_paths)
-    return CelebrityIndex(person_embeddings, person_names, person_image_paths, person_counts)
+    person_id_by_name = {name: idx for idx, name in enumerate(person_names)}
+    sample_person_ids = np.array([person_id_by_name[name] for name in names], dtype=np.int32)
+    return CelebrityIndex(
+        person_embeddings,
+        person_names,
+        person_image_paths,
+        person_counts,
+        sample_embeddings=matrix,
+        sample_names=names,
+        sample_image_paths=image_paths,
+        sample_person_ids=sample_person_ids,
+    )
 
 
 def _aggregate_people(
@@ -238,3 +285,10 @@ def _row_name(row, label_names: List[str]) -> str:
 def _pil_to_bgr(image) -> np.ndarray:
     rgb = np.array(image.convert("RGB"))
     return cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+
+
+def _write_jpg(path: Path, image_bgr: np.ndarray) -> None:
+    ok, encoded = cv2.imencode(".jpg", image_bgr)
+    if not ok:
+        raise RuntimeError(f"No se pudo codificar imagen JPG para {path}")
+    path.write_bytes(encoded.tobytes())

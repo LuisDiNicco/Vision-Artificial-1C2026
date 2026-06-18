@@ -11,7 +11,6 @@ configure_native_logs()
 import cv2
 import numpy as np
 
-from ..backend.alineamiento import align_face
 from ..backend.camera import open_webcam
 from ..backend.celebrity import CelebrityIndex, load_or_build_celebrity_cache
 from ..backend.clasificador import Prediction, save_classifier, train_classifier, try_load_classifier
@@ -249,8 +248,7 @@ class FaceRecognitionGui:
             self._set_status(f"No guardo la muestra: {quality.reason}")
             return
 
-        aligned = align_face(frame, face)
-        embedding = self._embedder().embed(aligned)
+        embedding, aligned = self._embedder().embed_face(frame, face)
         _, photo_path = save_sample(name, embedding, aligned, self.dpg.get_value("save_photos"))
         self.count_current += 1
         self._update_person_count()
@@ -273,8 +271,7 @@ class FaceRecognitionGui:
             if not quality.ok:
                 predictions.append(Prediction("desconocido", 0.0, float("inf"), method="calidad"))
                 continue
-            aligned = align_face(frame, detection)
-            embedding = self._embedder().embed(aligned)
+            embedding, _ = self._embedder().embed_face(frame, detection)
             predictions.append(self.classifier.predict(embedding))
 
         if len(predictions) == 1:
@@ -393,8 +390,7 @@ class FaceRecognitionGui:
         if index is None:
             self._set_status("Primero cachea los embeddings de famosos.")
             return
-        aligned = align_face(frame, face)
-        embedding = self._embedder().embed(aligned)
+        embedding, _ = self._embedder().embed_face(frame, face)
         self.celebrity_matches = index.top_unique(embedding, limit=5)
         if self.celebrity_matches:
             names = ", ".join(match.name for match in self.celebrity_matches)
@@ -444,7 +440,8 @@ class FaceRecognitionGui:
             canvas[y:y + 112, x:x + 112] = photo
             text_x = x + 128
             cv2.putText(canvas, f"{rank}. {match.name}"[:34], (text_x, y + 28), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (245, 247, 250), 1, cv2.LINE_AA)
-            cv2.putText(canvas, f"sim {match.similarity * 100:.1f}%  dist {match.distance:.3f}", (text_x, y + 58), cv2.FONT_HERSHEY_SIMPLEX, 0.46, (145, 210, 235), 1, cv2.LINE_AA)
+            detail = f"sim {match.similarity * 100:.1f}%  dist {match.distance:.3f}  n={match.samples}"
+            cv2.putText(canvas, detail, (text_x, y + 58), cv2.FONT_HERSHEY_SIMPLEX, 0.46, (145, 210, 235), 1, cv2.LINE_AA)
             y += tile_h
         return canvas
 
