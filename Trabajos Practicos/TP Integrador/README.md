@@ -168,6 +168,28 @@ $env:TP_FACE_EMBEDDER="arcface"
 python tp_integrador_gui.py
 ```
 
+### Evaluar reconocimiento
+
+El script de evaluacion separa los embeddings propios en entrenamiento/test de forma reproducible y, si existe el cache de famosos, usa embeddings de famosos como negativos para medir la categoria **"desconocido"**.
+
+```powershell
+python evaluar_reconocimiento.py
+```
+
+Opciones utiles:
+
+```powershell
+python evaluar_reconocimiento.py --test-size 0.25 --unknown-limit 300 --seed 42
+```
+
+Metricas principales:
+- **Accuracy conocidos:** porcentaje de embeddings propios de test clasificados con la identidad correcta.
+- **Falsos desconocidos:** porcentaje de embeddings propios rechazados como "desconocido".
+- **Rechazo desconocidos:** porcentaje de negativos externos clasificados correctamente como "desconocido".
+- **Falsos aceptados:** porcentaje de negativos externos aceptados incorrectamente como una persona registrada.
+
+El reporte completo se guarda en `datos/evaluacion_reconocimiento.json`.
+
 ### Controles esperados
 | Tecla | Acción |
 |---|---|
