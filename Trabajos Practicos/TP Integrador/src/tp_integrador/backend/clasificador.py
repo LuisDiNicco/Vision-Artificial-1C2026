@@ -8,6 +8,9 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import LabelEncoder, StandardScaler
 from sklearn.svm import SVC
 
+MIN_SAMPLES_FOR_OUTLIER_FILTER = 8
+OUTLIER_MAD_FACTOR = 3.5
+
 
 @dataclass
 class Prediction:
@@ -109,6 +112,10 @@ class FaceSVMClassifier:
 
 
 def train_classifier(embeddings: np.ndarray, labels: List[str]) -> FaceSVMClassifier:
+    embeddings = _normalize_embeddings(embeddings)
+    original_sample_count = len(labels)
+    embeddings, labels, outlier_count = _filter_training_outliers(embeddings, labels)
+
     label_encoder = LabelEncoder()
     encoded = label_encoder.fit_transform(labels)
     unique_labels = sorted(set(labels))
@@ -134,7 +141,7 @@ def train_classifier(embeddings: np.ndarray, labels: List[str]) -> FaceSVMClassi
         )
         pipeline.fit(embeddings, encoded)
 
-    return FaceSVMClassifier(
+    classifier = FaceSVMClassifier(
         pipeline=pipeline,
         label_encoder=label_encoder,
         centroids=centroids,
@@ -143,7 +150,50 @@ def train_classifier(embeddings: np.ndarray, labels: List[str]) -> FaceSVMClassi
         reference_labels=list(labels),
         class_thresholds=class_thresholds,
         class_core_distances=class_core_distances,
+        probability_threshold=0.60,
     )
+    classifier.original_sample_count = original_sample_count
+    classifier.training_sample_count = len(labels)
+    classifier.outlier_sample_count = outlier_count
+    return classifier
+
+
+def _normalize_embeddings(embeddings: np.ndarray) -> np.ndarray:
+    norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
+    return (embeddings / np.maximum(norms, 1e-6)).astype(np.float32)
+
+
+def _filter_training_outliers(embeddings: np.ndarray, labels: List[str]) -> Tuple[np.ndarray, List[str], int]:
+    labels_array = np.array(labels)
+    keep = np.ones(len(labels), dtype=bool)
+
+    for label in sorted(set(labels)):
+        indices = np.where(labels_array == label)[0]
+        if len(indices) < MIN_SAMPLES_FOR_OUTLIER_FILTER:
+            continue
+
+        class_embeddings = embeddings[indices]
+        centroid = class_embeddings.mean(axis=0)
+        centroid = centroid / max(float(np.linalg.norm(centroid)), 1e-6)
+        distances = np.linalg.norm(class_embeddings - centroid, axis=1)
+        median = float(np.median(distances))
+        mad = float(np.median(np.abs(distances - median)))
+        robust_sigma = 1.4826 * mad
+        if robust_sigma <= 1e-6:
+            threshold = float(np.percentile(distances, 95))
+        else:
+            threshold = median + OUTLIER_MAD_FACTOR * robust_sigma
+
+        class_keep = distances <= threshold
+        min_keep = max(5, int(np.ceil(len(indices) * 0.60)))
+        if int(np.sum(class_keep)) < min_keep:
+            continue
+        keep[indices] = class_keep
+
+    filtered_embeddings = embeddings[keep]
+    filtered_labels = [label for label, should_keep in zip(labels, keep) if should_keep]
+    outlier_count = int(np.sum(~keep))
+    return filtered_embeddings, filtered_labels, outlier_count
 
 
 def _calibrate_class_distances(

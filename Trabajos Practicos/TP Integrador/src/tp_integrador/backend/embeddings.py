@@ -23,6 +23,10 @@ class ArcFaceEmbedder:
         if requested_backend not in {"auto", "arcface", "deepface"}:
             raise ValueError("TP_FACE_EMBEDDER debe ser 'auto', 'arcface' o 'deepface'.")
 
+        self._alignment_backend = os.environ.get("TP_FACE_ALIGNMENT", "mediapipe").strip().lower()
+        if self._alignment_backend not in {"mediapipe", "deepface"}:
+            raise ValueError("TP_FACE_ALIGNMENT debe ser 'mediapipe' o 'deepface'.")
+
         if requested_backend == "deepface":
             self._init_deepface()
             return
@@ -82,16 +86,31 @@ class ArcFaceEmbedder:
     def embed_face(self, frame_bgr: np.ndarray, detection: FaceDetection) -> tuple[np.ndarray, np.ndarray]:
         """Extrae embedding desde el frame original y la deteccion de MediaPipe.
 
-        DeepFace hace su propia alineacion. La alineacion manual queda solo para
-        el backend `arcface`, que no incluye deteccion ni alineamiento.
+        Por defecto se usa la alineacion de 5 puntos de MediaPipe para darle a
+        ArcFace una entrada canonica y estable. DeepFace sigue siendo el
+        extractor de embeddings cuando el backend elegido es `deepface`.
         """
         if self._backend == "deepface":
+            if self._alignment_backend == "mediapipe":
+                try:
+                    aligned_bgr = align_face(frame_bgr, detection)
+                    return self.embed(aligned_bgr), aligned_bgr
+                except Exception:
+                    pass
             face_bgr = _crop_detection(frame_bgr, detection)
             aligned_bgr = self._deepface_aligned_face(face_bgr)
             return self.embed(aligned_bgr), aligned_bgr
 
         aligned_bgr = align_face(frame_bgr, detection)
         return self.embed(aligned_bgr), aligned_bgr
+
+    @property
+    def backend_name(self) -> str:
+        return self._backend
+
+    @property
+    def alignment_backend(self) -> str:
+        return self._alignment_backend
 
     def _deepface_aligned_face(self, face_bgr: np.ndarray) -> np.ndarray:
         detector_backend = os.environ.get("TP_DEEPFACE_DETECTOR", "opencv").strip().lower()

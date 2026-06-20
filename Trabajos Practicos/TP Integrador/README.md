@@ -231,13 +231,54 @@ Opciones razonables para una evolucion:
 ## Optimizaciones de precisión
 
 - **Alineamiento antes del embedding:** los landmarks de MediaPipe se usan para rotar, escalar y centrar la cara antes de ArcFace/DeepFace.
-- **Alineamiento DeepFace cuando corresponde:** con el backend por defecto, MediaPipe localiza la cara y DeepFace hace el alineamiento interno antes de ArcFace. La plantilla manual de 5 puntos queda como fallback para `TP_FACE_EMBEDDER=arcface`.
+- **Alineamiento estable para ArcFace:** con el backend por defecto, MediaPipe localiza landmarks, se aplica una transformacion de 5 puntos compatible con ArcFace y DeepFace extrae el embedding con `detector_backend="skip"`. Si se define `TP_FACE_ALIGNMENT=deepface`, DeepFace vuelve a encargarse del alineamiento interno.
 - **Filtro de calidad:** no se guardan muestras demasiado chicas, borrosas, oscuras, sobreexpuestas o cortadas por el borde.
 - **Comparación contra embeddings reales:** además del centroide por persona, el clasificador conserva los embeddings registrados y compara contra el vecino más cercano.
 - **Confianza calibrada:** el porcentaje ya no depende solamente de `predict_proba` del SVM; se calcula con la distancia real respecto de la variación interna de cada persona.
 - **Umbral por persona:** al entrenar, se estima un umbral con las distancias leave-one-out de las muestras de cada identidad.
-- **Suavizado temporal:** en reconocimiento con un solo rostro, se promedia una ventana corta de predicciones para reducir saltos de confianza entre frames.
+- **Suavizado temporal:** en reconocimiento con un solo rostro, se promedia una ventana corta de embeddings validos antes de clasificar y luego se suaviza la prediccion para reducir saltos de confianza entre frames.
+- **Registro estricto:** para generar datasets mas limpios, las muestras nuevas deben superar un puntaje minimo de calidad antes de guardarse.
+- **Filtrado de outliers:** al entrenar, las muestras que quedan estadisticamente lejos del grupo de su propia etiqueta se excluyen del modelo sin borrar los archivos originales.
 - **Doble famoso por centroide:** para evitar que una foto aislada gane por ruido, la busqueda de famosos compara contra el promedio normalizado de todas las fotos disponibles por identidad.
+
+### Diagnóstico de inestabilidad
+
+En pruebas con webcam puede ocurrir que la prediccion cambie mucho entre frames consecutivos: por ejemplo, pasar de reconocer correctamente a una persona con confianza alta a mostrar **"desconocido"** o confianza cercana a 0. Esto no significa necesariamente que ArcFace falle, sino que el embedding de entrada puede variar por:
+
+- movimiento de la cabeza o pose fuera de frente;
+- blur por movimiento o baja velocidad de obturacion;
+- iluminacion insuficiente, sombras o sobreexposicion;
+- deteccion/crop variable entre frames;
+- alineamiento inestable cuando los landmarks de ojos, nariz o boca se mueven;
+- expresiones faciales, oclusion parcial, lentes, pelo o mano cerca de la cara;
+- uso de un unico frame para decidir identidad o buscar doble famoso.
+
+La bibliografia revisada coincide en que el reconocimiento facial no debe interpretarse como una etapa aislada, sino como un pipeline completo: deteccion robusta, landmarks confiables, alineamiento, extraccion de embeddings y clasificacion con umbrales adecuados.
+
+### Mejoras respetando lo visto en clase
+
+Estas mejoras mantienen el enfoque del material de clase: MediaPipe/landmarks, alineamiento, embeddings ArcFace y clasificacion por distancia o SVM.
+
+- **Promediar embeddings de varios frames antes de decidir:** capturar una ventana corta de embeddings validos, normalizarlos, promediarlos y volver a normalizar el vector final. Esto reduce saltos causados por frames malos.
+- **Voto temporal de identidad:** conservar las ultimas predicciones y aceptar una identidad solo si aparece de forma consistente durante varios frames. Si hay desacuerdo fuerte, mostrar "analizando" o mantener la ultima identidad estable por un tiempo breve.
+- **Filtro de calidad mas estricto:** rechazar frames con blur, mala iluminacion, rostro muy pequeno, rostro cortado, pose lateral u ojos mal localizados antes de calcular el embedding.
+- **Alineamiento mas estable:** priorizar la transformacion por 5 puntos compatibles con ArcFace (ojos, nariz y comisuras de boca) para obtener una entrada canonica de 112x112, en vez de depender solo del rectangulo de la cara.
+- **Dataset propio mas variado:** registrar muestras de cada integrante con distintas luces, distancias, expresiones y leves cambios de pose. Es preferible tener pocas muestras buenas y variadas que muchas muestras casi iguales o borrosas.
+- **Umbrales calibrados con negativos:** ademas de distancias entre muestras de la misma persona, medir distancias contra personas no registradas para ajustar mejor cuando decir "desconocido".
+- **Separar SVM de rechazo por distancia:** usar el SVM para elegir la clase candidata, pero tomar la decision final con distancia a embeddings reales y umbral por persona. Esto evita aceptar una clase solo porque el SVM siempre debe elegir alguna.
+- **Mejorar el doble famoso con multi-frame:** al buscar doble, promediar varios embeddings buenos del usuario y comparar ese promedio contra los centroides de famosos. Asi el resultado depende menos del frame exacto donde se apreto el boton.
+- **Umbral para doble famoso:** mostrar "sin doble claro" si la similitud coseno no supera un minimo definido empiricamente. El top 5 siempre existe, pero no siempre representa un parecido fuerte.
+
+### Mejoras adicionales posibles
+
+Estas opciones van mas alla del minimo visto en clase, pero son compatibles con el proyecto si se quiere mejorar robustez.
+
+- **Seguimiento de rostro entre frames:** usar tracking para mantener el mismo rostro asociado a la misma identidad y evitar saltos cuando la deteccion cambia levemente.
+- **Normalizacion fotometrica:** aplicar correcciones suaves de brillo/contraste o ecualizacion controlada antes del embedding, cuidando no deformar la imagen de entrada del modelo.
+- **Clustering para depurar datos:** agrupar embeddings registrados por persona con DBSCAN o Chinese Whispers, como propone el material de clase, y detectar outliers. Si una muestra cae lejos del grupo, puede ser una captura mala o una cara mal alineada.
+- **Metricas de evaluacion:** armar un set de prueba con fotos propias y desconocidos, reportar accuracy, falsos positivos, falsos negativos y matriz de confusion.
+- **Busqueda aproximada si crece el dataset:** si el cache de famosos se vuelve muy grande, usar un indice de vecinos cercanos aproximados para acelerar la busqueda.
+- **Fusion de embedding y geometria:** para "dobles", combinar similitud de ArcFace con medidas de landmarks (relacion ancho/alto de rostro, distancia entre ojos, nariz-boca, mandibula). Esto puede acercarse mas al parecido percibido, aunque requiere calibracion.
 
 ## Referencias
 
@@ -246,8 +287,10 @@ Opciones razonables para una evolucion:
 - Proyecto: `Proyecto 5_ Reconocimiento de caras.docx`
 
 ### ArcFace
-- PyPI: https://pypi.org/project/arcface/
-- LearnOpenCV: https://learnopencv.com/face-recognition-with-arcface/
+- ArcFace en PyPI: https://pypi.org/project/arcface/
+- Implementacion TensorFlow 2 usada como base por la libreria: https://github.com/peteryuX/arcface-tf2
+- Guia conceptual y practica de ArcFace: https://learnopencv.com/face-recognition-with-arcface/
+- Paper original, ArcFace: Additive Angular Margin Loss for Deep Face Recognition: https://arxiv.org/abs/1801.07698
 
 ### MediaPipe Face Landmarker
 - https://ai.google.dev/edge/mediapipe/solutions/vision/face_landmarker
@@ -255,10 +298,12 @@ Opciones razonables para una evolucion:
 ### FaceNet (paper original)
 - Schroff et al., 2015: https://arxiv.org/abs/1503.03832
 
-### Conceptos complementarios
-- Face detection con DNN (Caffe): `deploy.prototxt` + `res10_300x300_ssd_iter_140000.caffemodel`
-- DLib facial landmarks: 68 puntos del dataset iBug 300-W
-- Alineamiento facial: rotación para dejar ambos ojos en la misma línea horizontal
+### Deteccion, landmarks, alineamiento y clasificacion
+- Face detection con OpenCV DNN/Caffe: https://pyimagesearch.com/2018/02/26/face-detection-with-opencv-and-deep-learning/
+- Facial landmarks con DLib y OpenCV: https://pyimagesearch.com/2017/04/03/facial-landmarks-dlib-opencv-python/
+- Alineamiento facial con OpenCV: https://pyimagesearch.com/2017/05/22/face-alignment-with-opencv-and-python/
+- Reconocimiento facial con embeddings y SVM: https://pyimagesearch.com/2018/09/24/opencv-face-recognition/
+- Clustering facial para agrupar embeddings y detectar outliers: https://pyimagesearch.com/2018/07/09/face-clustering-with-python/
 
 ## Notas
 

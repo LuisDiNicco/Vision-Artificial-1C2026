@@ -2,7 +2,7 @@ import json
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -26,13 +26,27 @@ def save_sample(
     embedding: np.ndarray,
     aligned_face_bgr: np.ndarray,
     save_photo: bool,
+    metadata: Optional[Dict[str, Any]] = None,
 ) -> Tuple[Path, Optional[Path]]:
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     slug = person_slug(name)
     person_dir = EMBEDDINGS_DIR / slug
     person_dir.mkdir(parents=True, exist_ok=True)
     path = person_dir / f"{timestamp}.npz"
-    np.savez_compressed(path, name=name.strip(), embedding=embedding.astype(np.float32))
+    metadata = metadata or {}
+    np.savez_compressed(
+        path,
+        name=name.strip(),
+        embedding=embedding.astype(np.float32),
+        captured_at=timestamp,
+        quality_score=np.float32(metadata.get("quality_score", 0.0)),
+        quality_reason=str(metadata.get("quality_reason", "")),
+        bbox=np.array(metadata.get("bbox", (0, 0, 0, 0)), dtype=np.int32),
+        detection_confidence=np.float32(metadata.get("detection_confidence", 0.0)),
+        embedder_backend=str(metadata.get("embedder_backend", "")),
+        alignment_backend=str(metadata.get("alignment_backend", "")),
+        metadata_json=json.dumps(metadata, ensure_ascii=False),
+    )
 
     if save_photo:
         photo_dir = PHOTOS_DIR / slug
@@ -54,7 +68,11 @@ def load_embeddings() -> Tuple[np.ndarray, List[str]]:
     labels: List[str] = []
     for path in sorted(EMBEDDINGS_DIR.glob("*/*.npz")):
         data = np.load(path, allow_pickle=False)
-        embeddings.append(data["embedding"].astype(np.float32))
+        embedding = data["embedding"].astype(np.float32)
+        norm = np.linalg.norm(embedding)
+        if norm > 0:
+            embedding = embedding / norm
+        embeddings.append(embedding)
         labels.append(str(data["name"]))
     if not embeddings:
         return np.empty((0, 512), dtype=np.float32), []

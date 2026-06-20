@@ -26,9 +26,11 @@ VIDEO_H = 720
 BASE_VIEWPORT_W = 1680
 BASE_VIEWPORT_H = 900
 SMOOTHING_WINDOW = 7
-DETECTION_INTERVAL_REGISTRATION = 2
-DETECTION_INTERVAL_RECOGNITION = 3
-RECOGNITION_INTERVAL = 6
+EMBEDDING_SMOOTHING_WINDOW = 5
+DETECTION_INTERVAL_REGISTRATION = 1
+DETECTION_INTERVAL_RECOGNITION = 1
+RECOGNITION_INTERVAL = 3
+REGISTRATION_MIN_QUALITY_SCORE = 0.62
 
 
 def parse_args() -> argparse.Namespace:
@@ -63,6 +65,7 @@ class FaceRecognitionGui:
         self.celebrity_search_requested = False
         self.celebrity_cache_requested = False
         self.celebrity_matches = []
+        self.recent_embeddings = deque(maxlen=EMBEDDING_SMOOTHING_WINDOW)
         self.recent_predictions = deque(maxlen=SMOOTHING_WINDOW)
         self.frame_index = 0
         self.last_detections = []
@@ -71,7 +74,7 @@ class FaceRecognitionGui:
         self.video_display_h = VIDEO_H
 
         self.cap = None
-        self.detector = MediaPipeFaceDetector(max_faces=4)
+        self.detector = MediaPipeFaceDetector(max_faces=4, min_detection_confidence=0.70, min_tracking_confidence=0.70)
         self.embedder = None
         self.classifier = None
         self.celebrity_index = None
@@ -247,13 +250,24 @@ class FaceRecognitionGui:
         if not quality.ok:
             self._set_status(f"No guardo la muestra: {quality.reason}")
             return
+        if quality.score < REGISTRATION_MIN_QUALITY_SCORE:
+            self._set_status(f"No guardo la muestra: calidad {quality.score:.2f}; busca mejor luz, enfoque y pose frontal.")
+            return
 
         embedding, aligned = self._embedder().embed_face(frame, face)
-        _, photo_path = save_sample(name, embedding, aligned, self.dpg.get_value("save_photos"))
+        metadata = {
+            "quality_score": quality.score,
+            "quality_reason": quality.reason,
+            "bbox": face.bbox,
+            "detection_confidence": face.confidence,
+            "embedder_backend": self._embedder().backend_name,
+            "alignment_backend": self._embedder().alignment_backend,
+        }
+        _, photo_path = save_sample(name, embedding, aligned, self.dpg.get_value("save_photos"), metadata)
         self.count_current += 1
         self._update_person_count()
         suffix = " con foto" if photo_path is not None else ""
-        self._set_status(f"Muestra guardada{suffix}. Total de esta sesion: {self.count_current}.")
+        self._set_status(f"Muestra guardada{suffix}. Calidad {quality.score:.2f}. Total de esta sesion: {self.count_current}.")
 
     def _get_detections(self, frame):
         interval = DETECTION_INTERVAL_REGISTRATION if self.mode == "registro" else DETECTION_INTERVAL_RECOGNITION
@@ -269,15 +283,23 @@ class FaceRecognitionGui:
         for detection in detections:
             quality = assess_face_quality(frame, detection)
             if not quality.ok:
+                if len(detections) == 1:
+                    self.recent_embeddings.clear()
                 predictions.append(Prediction("desconocido", 0.0, float("inf"), method="calidad"))
                 continue
             embedding, _ = self._embedder().embed_face(frame, detection)
+            if len(detections) == 1:
+                self.recent_embeddings.append(embedding)
+                embedding = average_embeddings(self.recent_embeddings)
             predictions.append(self.classifier.predict(embedding))
 
         if len(predictions) == 1:
             self.recent_predictions.append(predictions[0])
             predictions[0] = smooth_single_prediction(self.recent_predictions)
+            if len(self.recent_embeddings) > 1 and predictions[0].label != "desconocido":
+                predictions[0].method = f"{predictions[0].method}+promedio"
         else:
+            self.recent_embeddings.clear()
             self.recent_predictions.clear()
 
         self.last_predictions = predictions
@@ -292,7 +314,10 @@ class FaceRecognitionGui:
         save_classifier(classifier, MODEL_PATH)
         self.classifier = classifier
         people = ", ".join(sorted(set(labels)))
-        self._set_status(f"Modelo entrenado con {len(labels)} muestras: {people}")
+        outliers = getattr(classifier, "outlier_sample_count", 0)
+        used = getattr(classifier, "training_sample_count", len(labels))
+        suffix = f" ({outliers} outliers excluidos)" if outliers else ""
+        self._set_status(f"Modelo entrenado con {used}/{len(labels)} muestras{suffix}: {people}")
 
     def _embedder(self):
         if self.embedder is None:
@@ -323,6 +348,8 @@ class FaceRecognitionGui:
             self.camera_index = index
             self.last_detections = []
             self.last_predictions = []
+            self.recent_embeddings.clear()
+            self.recent_predictions.clear()
             self.dpg.set_value("camera_combo", str(index))
             self._set_status(f"Camara activa: {index}")
         else:
@@ -353,6 +380,7 @@ class FaceRecognitionGui:
 
     def _on_mode_changed(self, sender, app_data, user_data=None) -> None:
         self.mode = "registro" if app_data == "Registro" else "reconocimiento"
+        self.recent_embeddings.clear()
         self.recent_predictions.clear()
         self._set_status(f"Modo activo: {app_data}")
 
@@ -526,6 +554,15 @@ def smooth_single_prediction(recent_predictions):
     confidence = sum(item.confidence for item in group) / len(group)
     distance = sum(item.distance for item in group) / len(group)
     return type(group[-1])(label=label, confidence=confidence, distance=distance, method=group[-1].method)
+
+
+def average_embeddings(recent_embeddings):
+    matrix = np.vstack(list(recent_embeddings)).astype(np.float32)
+    embedding = matrix.mean(axis=0)
+    norm = np.linalg.norm(embedding)
+    if norm > 0:
+        embedding = embedding / norm
+    return embedding.astype(np.float32)
 
 
 def enable_high_dpi() -> None:
