@@ -18,6 +18,13 @@ from ..backend.data import MODEL_PATH, count_embeddings_for_person, load_embeddi
 from ..backend.deteccion import MediaPipeFaceDetector, largest_face
 from ..backend.embeddings import ArcFaceEmbedder
 from ..backend.face_quality import assess_face_quality
+from ..backend.screen_capture import list_available_windows, open_screen_capture, open_window_capture
+from ..backend.video_inputs import download_youtube_video, looks_like_youtube_url
+from ..backend.video_celebrity_recognition import (
+    VideoCelebrityConfig,
+    compose_video_results_view,
+    recognize_celebrities_in_video,
+)
 from ..frontend.video_overlay import draw_face_annotations
 
 
@@ -37,6 +44,14 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Interfaz grafica del TP Integrador.")
     parser.add_argument("--camera", type=int, default=0, help="Indice de camara OpenCV a usar.")
     parser.add_argument("--max-camera-index", type=int, default=8, help="Indice maximo de camara a listar.")
+    parser.add_argument(
+        "--source",
+        choices=("webcam", "screen", "window"),
+        default="webcam",
+        help="Fuente inicial de video: webcam, screen o window.",
+    )
+    parser.add_argument("--monitor", type=int, default=1, help="Monitor a capturar con --source screen. 1 suele ser el principal.")
+    parser.add_argument("--window-title", default="Discord", help="Titulo parcial de ventana a capturar con --source window.")
     return parser.parse_args()
 
 
@@ -48,15 +63,26 @@ def main() -> None:
         raise RuntimeError("Falta Dear PyGui. Ejecuta: pip install dearpygui") from exc
 
     args = parse_args()
-    app = FaceRecognitionGui(dpg, args.camera, args.max_camera_index)
+    app = FaceRecognitionGui(dpg, args.camera, args.max_camera_index, args.source, args.monitor, args.window_title)
     app.run()
 
 
 class FaceRecognitionGui:
-    def __init__(self, dpg, camera_index: int, max_camera_index: int) -> None:
+    def __init__(
+        self,
+        dpg,
+        camera_index: int,
+        max_camera_index: int,
+        video_source: str,
+        monitor_index: int,
+        window_title: str,
+    ) -> None:
         self.dpg = dpg
         self.camera_index = camera_index
         self.max_camera_index = max_camera_index
+        self.video_source = video_source
+        self.monitor_index = monitor_index
+        self.window_title = window_title
         self.mode = "registro"
         self.status = "Listo para iniciar"
         self.count_current = 0
@@ -65,6 +91,10 @@ class FaceRecognitionGui:
         self.celebrity_search_requested = False
         self.celebrity_cache_requested = False
         self.celebrity_matches = []
+        self.video_file_path = ""
+        self.youtube_video_path = None
+        self.video_actor_results = []
+        self.static_display_frame = None
         self.recent_embeddings = deque(maxlen=EMBEDDING_SMOOTHING_WINDOW)
         self.recent_predictions = deque(maxlen=SMOOTHING_WINDOW)
         self.frame_index = 0
@@ -81,7 +111,7 @@ class FaceRecognitionGui:
 
     def run(self) -> None:
         self._build_ui()
-        self._open_camera(self.camera_index)
+        self._open_video_source()
         self._load_classifier_if_exists()
 
         while self.dpg.is_dearpygui_running():
@@ -141,6 +171,61 @@ class FaceRecognitionGui:
                     dpg.add_text("Cache: no cargado", tag="celebrity_status_text", wrap=300, color=(190, 200, 210))
 
                     dpg.add_separator()
+                    dpg.add_text("Video de famosos")
+                    with dpg.tab_bar(tag="video_actor_tabs"):
+                        with dpg.tab(label="Archivo"):
+                            dpg.add_button(label="Elegir video", tag="choose_video_button", callback=self._show_video_file_dialog, width=-1)
+                            dpg.add_text("Ningun video seleccionado", tag="video_file_text", wrap=300, color=(190, 200, 210))
+                        with dpg.tab(label="YouTube"):
+                            dpg.add_input_text(
+                                tag="youtube_url_input",
+                                hint="https://www.youtube.com/watch?v=...",
+                                width=-1,
+                            )
+                            dpg.add_text("Se descarga a cache/videos y se analiza localmente.", tag="youtube_help_text", wrap=300, color=(190, 200, 210))
+                        with dpg.tab(label="Parametros"):
+                            dpg.add_slider_float(
+                                label="Muestreo (seg)",
+                                tag="video_sample_seconds",
+                                default_value=0.35,
+                                min_value=0.15,
+                                max_value=1.25,
+                                width=-1,
+                            )
+                            dpg.add_slider_int(
+                                label="Max muestras",
+                                tag="video_max_frames",
+                                default_value=220,
+                                min_value=40,
+                                max_value=700,
+                                width=-1,
+                            )
+                            dpg.add_slider_float(
+                                label="Similitud minima",
+                                tag="video_min_similarity",
+                                default_value=0.34,
+                                min_value=0.20,
+                                max_value=0.70,
+                                width=-1,
+                            )
+                            dpg.add_button(label="Analizar actores", tag="analyze_video_button", callback=self._analyze_selected_video, width=-1)
+                            dpg.add_button(label="Volver al vivo", tag="live_video_button", callback=self._return_to_live_video, width=-1)
+                        with dpg.tab(label="Resultados"):
+                            dpg.add_text("Sin analisis todavia.", tag="video_results_text", wrap=300, color=(225, 230, 235))
+
+                    dpg.add_separator()
+                    dpg.add_text("Fuente de video")
+                    dpg.add_radio_button(
+                        ("Webcam", "Pantalla", "Ventana"),
+                        default_value=self._source_label(self.video_source),
+                        callback=self._on_source_changed,
+                        horizontal=True,
+                        tag="source_radio",
+                    )
+                    dpg.add_combo([], tag="window_combo", width=-1)
+                    with dpg.group(horizontal=True):
+                        dpg.add_button(label="Aplicar ventana", tag="window_button", callback=self._open_selected_window, width=150)
+                        dpg.add_button(label="Refrescar", tag="refresh_windows_button", callback=self._populate_window_options, width=150)
                     dpg.add_text("Camara")
                     dpg.add_combo([], tag="camera_combo", width=-1)
                     with dpg.group(horizontal=True):
@@ -155,8 +240,22 @@ class FaceRecognitionGui:
                 with dpg.child_window(tag="video_panel", width=1308, height=820, border=False):
                     dpg.add_image("video_texture", tag="video_image", width=VIDEO_W, height=VIDEO_H)
 
+        with dpg.file_dialog(
+            directory_selector=False,
+            show=False,
+            callback=self._on_video_file_selected,
+            tag="video_file_dialog",
+            width=720,
+            height=460,
+        ):
+            dpg.add_file_extension(".mp4", color=(90, 210, 255, 255))
+            dpg.add_file_extension(".avi", color=(90, 210, 255, 255))
+            dpg.add_file_extension(".mov", color=(90, 210, 255, 255))
+            dpg.add_file_extension(".mkv", color=(90, 210, 255, 255))
+
         self._apply_theme()
         self._populate_camera_options()
+        self._populate_window_options()
         dpg.create_viewport(title="TP Integrador - Reconocimiento Facial", width=BASE_VIEWPORT_W, height=BASE_VIEWPORT_H)
         dpg.setup_dearpygui()
         dpg.show_viewport()
@@ -193,13 +292,17 @@ class FaceRecognitionGui:
 
     def _render_frame(self) -> None:
         dpg = self.dpg
+        if self.static_display_frame is not None:
+            self._update_video_texture(self.static_display_frame)
+            return
+
         if self.cap is None or not self.cap.isOpened():
-            self._set_status("No hay camara abierta.")
+            self._set_status("No hay fuente de video abierta.")
             return
 
         ok, frame = self.cap.read()
         if not ok:
-            self._set_status("No se pudo leer frame de camara.")
+            self._set_status("No se pudo leer frame de la fuente de video.")
             return
 
         self.frame_index += 1
@@ -334,7 +437,24 @@ class FaceRecognitionGui:
             self.classifier = None
             self._set_status(error)
 
-    def _open_camera(self, index: int) -> None:
+    def _open_video_source(self) -> None:
+        if self.video_source == "window":
+            self._open_window_capture(self.window_title)
+        elif self.video_source == "screen":
+            self._open_screen_capture()
+        else:
+            self._open_camera(self.camera_index)
+
+    def _reset_video_state(self) -> None:
+        self.last_detections = []
+        self.last_predictions = []
+        self.recent_embeddings.clear()
+        self.recent_predictions.clear()
+        self.celebrity_matches = []
+        self.video_actor_results = []
+        self.static_display_frame = None
+
+    def _open_camera(self, index: int) -> bool:
         next_cap = open_webcam(index, width=VIDEO_W, height=VIDEO_H, fps=30)
         if next_cap.isOpened():
             ok, _ = next_cap.read()
@@ -346,21 +466,89 @@ class FaceRecognitionGui:
                 self.cap.release()
             self.cap = next_cap
             self.camera_index = index
-            self.last_detections = []
-            self.last_predictions = []
-            self.recent_embeddings.clear()
-            self.recent_predictions.clear()
+            self.video_source = "webcam"
+            self._reset_video_state()
+            if self.dpg.does_item_exist("source_radio"):
+                self.dpg.set_value("source_radio", self._source_label("webcam"))
             self.dpg.set_value("camera_combo", str(index))
             self._set_status(f"Camara activa: {index}")
+            return True
         else:
             next_cap.release()
             self.dpg.set_value("camera_combo", str(self.camera_index))
             self._set_status(f"No se pudo abrir camara {index}")
+            return False
+
+    def _open_screen_capture(self) -> bool:
+        next_cap = open_screen_capture(monitor_index=self.monitor_index, width=None, height=None)
+        if next_cap.isOpened():
+            ok, _ = next_cap.read()
+        else:
+            ok = False
+
+        if ok:
+            if self.cap is not None:
+                self.cap.release()
+            self.cap = next_cap
+            self.video_source = "screen"
+            self._reset_video_state()
+            if self.dpg.does_item_exist("source_radio"):
+                self.dpg.set_value("source_radio", self._source_label("screen"))
+            self._set_status(f"Capturando pantalla: monitor {self.monitor_index}")
+            return True
+        else:
+            next_cap.release()
+            if self.dpg.does_item_exist("source_radio"):
+                self.dpg.set_value("source_radio", self._source_label(self.video_source))
+            self._set_status("No se pudo capturar pantalla. Instala mss o revisa permisos del sistema.")
+            return False
+
+    def _open_window_capture(self, title: str) -> bool:
+        title = title.strip()
+        next_cap = open_window_capture(title=title, width=None, height=None)
+        if next_cap.isOpened():
+            ok, _ = next_cap.read()
+        else:
+            ok = False
+
+        if ok:
+            if self.cap is not None:
+                self.cap.release()
+            self.cap = next_cap
+            self.video_source = "window"
+            self.window_title = title
+            self._reset_video_state()
+            if self.dpg.does_item_exist("source_radio"):
+                self.dpg.set_value("source_radio", self._source_label("window"))
+            if self.dpg.does_item_exist("window_combo"):
+                self.dpg.set_value("window_combo", title)
+            self._set_status(f"Capturando ventana: {title}")
+            return True
+        else:
+            next_cap.release()
+            if self.dpg.does_item_exist("source_radio"):
+                self.dpg.set_value("source_radio", self._source_label(self.video_source))
+            self._set_status(f"No se pudo capturar ventana con titulo: {title}")
+            return False
 
     def _populate_camera_options(self) -> None:
         items = [str(index) for index in range(self.max_camera_index + 1)]
         self.dpg.configure_item("camera_combo", items=items)
         self.dpg.set_value("camera_combo", str(self.camera_index))
+
+    def _populate_window_options(self, *args) -> None:
+        items = list_available_windows()
+        if self.window_title and self.window_title not in items:
+            items.insert(0, self.window_title)
+        self.dpg.configure_item("window_combo", items=items)
+        if items:
+            selected = self.window_title if self.window_title in items else items[0]
+            self.dpg.set_value("window_combo", selected)
+            self.window_title = selected
+            self._set_status(f"Ventanas detectadas: {len(items)}")
+        else:
+            self.dpg.set_value("window_combo", "")
+            self._set_status("No se detectaron ventanas capturables.")
 
     def _switch_camera(self, *args) -> None:
         selected = self.dpg.get_value("camera_combo")
@@ -377,6 +565,32 @@ class FaceRecognitionGui:
             if self.camera_index != before:
                 return
         self._set_status("No se encontro otra camara disponible.")
+
+    def _on_source_changed(self, sender, app_data, user_data=None) -> None:
+        previous_source = self.video_source
+        if app_data == "Ventana":
+            ok = self._open_window_capture(self.dpg.get_value("window_combo"))
+        elif app_data == "Pantalla":
+            ok = self._open_screen_capture()
+        else:
+            ok = self._open_camera(self.camera_index)
+        if not ok:
+            self.video_source = previous_source
+            self.dpg.set_value("source_radio", self._source_label(previous_source))
+
+    def _open_selected_window(self, *args) -> None:
+        previous_source = self.video_source
+        ok = self._open_window_capture(self.dpg.get_value("window_combo"))
+        if not ok:
+            self.video_source = previous_source
+            self.dpg.set_value("source_radio", self._source_label(previous_source))
+
+    def _source_label(self, source: str) -> str:
+        return {
+            "webcam": "Webcam",
+            "screen": "Pantalla",
+            "window": "Ventana",
+        }.get(source, "Webcam")
 
     def _on_mode_changed(self, sender, app_data, user_data=None) -> None:
         self.mode = "registro" if app_data == "Registro" else "reconocimiento"
@@ -404,6 +618,83 @@ class FaceRecognitionGui:
 
     def _request_celebrity_cache(self, *args) -> None:
         self.celebrity_cache_requested = True
+
+    def _show_video_file_dialog(self, *args) -> None:
+        self.dpg.show_item("video_file_dialog")
+
+    def _on_video_file_selected(self, sender, app_data, user_data=None) -> None:
+        path = app_data.get("file_path_name", "") if isinstance(app_data, dict) else ""
+        if not path:
+            return
+        self.video_file_path = path
+        self.youtube_video_path = None
+        if self.dpg.does_item_exist("youtube_url_input"):
+            self.dpg.set_value("youtube_url_input", "")
+        display_name = Path(path).name
+        self.dpg.set_value("video_file_text", display_name)
+        self._set_status(f"Video seleccionado: {display_name}")
+
+    def _analyze_selected_video(self, *args) -> None:
+        video_path = self._resolve_actor_video_path()
+        if video_path is None:
+            return
+        index = self._load_celebrity_index()
+        if index is None:
+            self._set_status("Primero cachea los embeddings de famosos.")
+            return
+
+        config = VideoCelebrityConfig(
+            sample_every_seconds=float(self.dpg.get_value("video_sample_seconds")),
+            max_frames=int(self.dpg.get_value("video_max_frames")),
+            min_similarity=float(self.dpg.get_value("video_min_similarity")),
+        )
+        self._set_status("Analizando video de famosos...")
+        try:
+            self.video_actor_results = recognize_celebrities_in_video(
+                video_path,
+                self.detector,
+                self._embedder(),
+                index,
+                config=config,
+                progress_callback=self._set_status,
+            )
+        except Exception as exc:
+            self.video_actor_results = []
+            self._set_status(f"No se pudo analizar el video: {exc}")
+            return
+
+        self._update_video_actor_results()
+        summary = compose_video_results_view(self.video_actor_results, VIDEO_W, VIDEO_H)
+        self.static_display_frame = summary
+        self._update_video_texture(summary)
+        if self.video_actor_results:
+            names = ", ".join(result.name for result in self.video_actor_results[:5])
+            self._set_status(f"Actores candidatos detectados: {names}")
+        else:
+            self._set_status("No hubo coincidencias confiables en el video.")
+
+    def _return_to_live_video(self, *args) -> None:
+        self.static_display_frame = None
+        self._set_status("Vista en vivo restaurada.")
+
+    def _resolve_actor_video_path(self) -> Path | str | None:
+        youtube_url = self.dpg.get_value("youtube_url_input").strip() if self.dpg.does_item_exist("youtube_url_input") else ""
+        if youtube_url:
+            if not looks_like_youtube_url(youtube_url):
+                self._set_status("La URL no parece ser de YouTube.")
+                return None
+            try:
+                self.youtube_video_path = download_youtube_video(youtube_url, progress_callback=self._set_status)
+            except Exception as exc:
+                self._set_status(f"No se pudo descargar el video de YouTube: {exc}")
+                return None
+            self.video_file_path = str(self.youtube_video_path)
+            self.dpg.set_value("video_file_text", f"YouTube: {Path(self.video_file_path).name}")
+            return self.youtube_video_path
+        if not self.video_file_path:
+            self._set_status("Elegi un video local o pega una URL de YouTube.")
+            return None
+        return self.video_file_path
 
     def _search_celebrity_double(self, frame, detections) -> None:
         face = largest_face(detections)
@@ -447,6 +738,21 @@ class FaceRecognitionGui:
         if self.dpg.does_item_exist("celebrity_status_text"):
             self.dpg.set_value("celebrity_status_text", message)
 
+    def _update_video_actor_results(self) -> None:
+        if not self.dpg.does_item_exist("video_results_text"):
+            return
+        if not self.video_actor_results:
+            self.dpg.set_value("video_results_text", "Sin coincidencias confiables.")
+            return
+        lines = []
+        for result in self.video_actor_results[:8]:
+            lines.append(
+                f"{result.name}: conf {result.confidence * 100:.0f}% | "
+                f"sim {result.similarity * 100:.1f}% | "
+                f"{result.samples} muestras | {result.first_second:.1f}s-{result.last_second:.1f}s"
+            )
+        self.dpg.set_value("video_results_text", "\n".join(lines))
+
     def _compose_celebrity_view(self, frame):
         canvas = np.zeros((VIDEO_H, VIDEO_W, 3), dtype=np.uint8)
         left_w = int(VIDEO_W * 0.58)
@@ -485,9 +791,15 @@ class FaceRecognitionGui:
         if predictions:
             prediction = predictions[0]
             prediction_text = f" | {prediction.label}: {prediction.confidence * 100:.1f}%"
+        if self.video_source == "webcam":
+            source_text = f"Camara {self.camera_index}"
+        elif self.video_source == "window":
+            source_text = f"Ventana {self.window_title}"
+        else:
+            source_text = f"Pantalla {self.monitor_index}"
         self.dpg.set_value(
             "stats_text",
-            f"Modo: {self.mode} | Camara: {self.camera_index} | Rostros: {face_count}{prediction_text}",
+            f"Modo: {self.mode} | Fuente: {source_text} | Rostros: {face_count}{prediction_text}",
         )
 
     def _update_person_count(self) -> None:
@@ -532,8 +844,13 @@ class FaceRecognitionGui:
             self.dpg.configure_item("train_button", width=button_w)
             self.dpg.configure_item("switch_camera_button", width=button_w)
             self.dpg.configure_item("next_camera_button", width=button_w)
+            self.dpg.configure_item("window_button", width=button_w)
+            self.dpg.configure_item("refresh_windows_button", width=button_w)
             self.dpg.configure_item("celebrity_button", width=button_w)
             self.dpg.configure_item("celebrity_cache_button", width=button_w)
+            self.dpg.configure_item("choose_video_button", width=-1)
+            self.dpg.configure_item("analyze_video_button", width=-1)
+            self.dpg.configure_item("live_video_button", width=-1)
         if self.dpg.does_item_exist("video_panel"):
             self.dpg.configure_item("video_panel", width=content_w, height=content_h)
             self.dpg.configure_item("video_image", width=video_w, height=video_h)

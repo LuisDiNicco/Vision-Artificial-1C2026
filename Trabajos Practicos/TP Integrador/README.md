@@ -154,6 +154,22 @@ pip install -r requirements.txt
 python tp_integrador_gui.py
 ```
 
+La fuente de video se puede cambiar desde el panel lateral entre **Webcam**, **Pantalla** y **Ventana**. El modo pantalla captura el monitor principal; el modo ventana muestra un desplegable con las ventanas activas y captura solo la app seleccionada, por ejemplo `Discord`. Si abriste una app despues de iniciar la interfaz, usa **Refrescar** para actualizar la lista.
+
+La seccion **Video de famosos** permite elegir un archivo `.mp4`, `.avi`, `.mov` o `.mkv`, o pegar una URL de YouTube, y buscar que actores/famosos aparecen usando el cache `cache/famosos/celebrity_arcface_index.npz`. Para YouTube se usa `yt-dlp` y el video se descarga en `cache/videos` antes de analizarlo. El analisis muestrea frames, descarta rostros chicos/borrosos o poco frontales, promedia varios embeddings por aparicion y compara contra los embeddings agregados del dataset de famosos. Para videos largos conviene empezar con **Muestreo (seg)** entre `0.35` y `0.60`, **Max muestras** entre `180` y `300`, y subir **Similitud minima** si aparecen falsos positivos.
+
+Tambien se puede iniciar directamente capturando pantalla:
+
+```bash
+python tp_integrador_gui.py --source screen
+```
+
+O capturando una ventana por titulo:
+
+```bash
+python tp_integrador_gui.py --source window --window-title Discord
+```
+
 Por defecto se usa DeepFace con `model_name="ArcFace"`, porque es el camino mas robusto en Python moderno y mantiene el modelo ArcFace del pipeline. Para explicitarlo:
 
 ```powershell
@@ -207,7 +223,7 @@ La UI principal usa **Dear PyGui**, con panel lateral, selector de camara, boton
 
 En Windows se activa DPI awareness y se carga una fuente del sistema para evitar que la ventana se vea escalada o borrosa en monitores HiDPI.
 
-La ventana es responsive: al agrandarla se reajustan el panel lateral, el video y la escala tipografica. La seleccion de camara no reescanea dispositivos automaticamente; se elige un indice y se confirma con **Cambiar camara**, o se usa **Siguiente** para saltar a la proxima camara que responda.
+La ventana es responsive: al agrandarla se reajustan el panel lateral, el video y la escala tipografica. La seleccion de camara no reescanea dispositivos automaticamente; se elige un indice y se confirma con **Cambiar camara**, o se usa **Siguiente** para saltar a la proxima camara que responda. En fuente **Pantalla** y **Ventana**, el frame viene de captura del escritorio mediante `mss`; para ubicar ventanas por titulo se usa `pygetwindow`. Estas fuentes se procesan en resolucion nativa para conservar detalle cuando hay varias caras en una llamada.
 
 En modo registro, **Nueva persona** limpia el nombre actual y reinicia el contador de sesion. El panel muestra tambien la cantidad de embeddings guardados para la persona escrita.
 
