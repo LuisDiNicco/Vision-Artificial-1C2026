@@ -41,8 +41,9 @@ def download_youtube_video(url: str, progress_callback=None) -> Path:
             progress_callback("Video descargado. Preparando analisis...")
 
     options = {
-        "format": "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/best",
-        "merge_output_format": "mp4",
+        # Evita formatos separados video+audio porque requieren ffmpeg para mergear.
+        # Para reconocimiento facial alcanza con video; el audio no se usa.
+        "format": "best[ext=mp4][vcodec!=none][acodec!=none]/bestvideo[ext=mp4]/best[ext=mp4]/bestvideo",
         "outtmpl": str(VIDEO_DOWNLOAD_DIR / "%(id)s.%(ext)s"),
         "noplaylist": True,
         "quiet": True,
