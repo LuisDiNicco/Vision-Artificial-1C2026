@@ -1,0 +1,94 @@
+import json
+import re
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+import cv2
+import numpy as np
+
+
+BASE_DIR = Path(__file__).resolve().parents[3]
+PRIVATE_DATA_DIR = BASE_DIR / "datos_privados"
+EMBEDDINGS_DIR = PRIVATE_DATA_DIR / "embeddings"
+PHOTOS_DIR = PRIVATE_DATA_DIR / "fotos"
+MODEL_PATH = BASE_DIR / "modelo" / "clasificador_svm.joblib"
+SUMMARY_PATH = BASE_DIR / "datos" / "resumen_embeddings.json"
+
+
+def person_slug(name: str) -> str:
+    slug = re.sub(r"[^a-zA-Z0-9]+", "_", name.strip().lower()).strip("_")
+    return slug or "persona"
+
+
+def save_sample(
+    name: str,
+    embedding: np.ndarray,
+    aligned_face_bgr: np.ndarray,
+    save_photo: bool,
+    metadata: Optional[Dict[str, Any]] = None,
+) -> Tuple[Path, Optional[Path]]:
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    slug = person_slug(name)
+    person_dir = EMBEDDINGS_DIR / slug
+    person_dir.mkdir(parents=True, exist_ok=True)
+    path = person_dir / f"{timestamp}.npz"
+    metadata = metadata or {}
+    np.savez_compressed(
+        path,
+        name=name.strip(),
+        embedding=embedding.astype(np.float32),
+        captured_at=timestamp,
+        quality_score=np.float32(metadata.get("quality_score", 0.0)),
+        quality_reason=str(metadata.get("quality_reason", "")),
+        bbox=np.array(metadata.get("bbox", (0, 0, 0, 0)), dtype=np.int32),
+        detection_confidence=np.float32(metadata.get("detection_confidence", 0.0)),
+        embedder_backend=str(metadata.get("embedder_backend", "")),
+        alignment_backend=str(metadata.get("alignment_backend", "")),
+        metadata_json=json.dumps(metadata, ensure_ascii=False),
+    )
+
+    if save_photo:
+        photo_dir = PHOTOS_DIR / slug
+        photo_dir.mkdir(parents=True, exist_ok=True)
+        photo_path = photo_dir / f"{timestamp}.jpg"
+        ok, encoded = cv2.imencode(".jpg", aligned_face_bgr)
+        if not ok:
+            raise RuntimeError("No se pudo codificar la foto alineada como JPG.")
+        photo_path.write_bytes(encoded.tobytes())
+    else:
+        photo_path = None
+
+    write_public_summary()
+    return path, photo_path
+
+
+def load_embeddings() -> Tuple[np.ndarray, List[str]]:
+    embeddings = []
+    labels: List[str] = []
+    for path in sorted(EMBEDDINGS_DIR.glob("*/*.npz")):
+        data = np.load(path, allow_pickle=False)
+        embedding = data["embedding"].astype(np.float32)
+        norm = np.linalg.norm(embedding)
+        if norm > 0:
+            embedding = embedding / norm
+        embeddings.append(embedding)
+        labels.append(str(data["name"]))
+    if not embeddings:
+        return np.empty((0, 512), dtype=np.float32), []
+    return np.vstack(embeddings), labels
+
+
+def count_embeddings_for_person(name: str) -> int:
+    slug = person_slug(name)
+    return sum(1 for _ in (EMBEDDINGS_DIR / slug).glob("*.npz"))
+
+
+def write_public_summary() -> None:
+    SUMMARY_PATH.parent.mkdir(parents=True, exist_ok=True)
+    summary = {}
+    for path in sorted(EMBEDDINGS_DIR.glob("*/*.npz")):
+        data = np.load(path, allow_pickle=False)
+        name = str(data["name"])
+        summary[name] = summary.get(name, 0) + 1
+    SUMMARY_PATH.write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8")

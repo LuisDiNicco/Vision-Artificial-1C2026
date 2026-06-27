@@ -4,3 +4,11 @@ __pycache__/
 *.pyd
 .venv/
 Contenidos de Clase
+Grabaciones de Clase
+datos_privados/
+face_landmarker.task
+modelo/*.joblib
+.agents
+.codex
+Recordings.zip
+Trabajos Practicos/TP Integrador/cache/videos
