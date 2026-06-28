@@ -11,17 +11,13 @@ HELP_TOPICS = {
         "Reconocimiento en vivo",
         "Activa el modo reconocimiento despues de entrenar el SVM. La etiqueta aparece sobre cada rostro detectado. Si la confianza baja, suma mas capturas de entrenamiento con mejor calidad.",
     ),
-    "celebrity": (
-        "Doble famoso",
-        "Usa el cache de famosos para comparar el rostro principal del frame actual contra el dataset. Primero genera o carga el cache; despues usa Buscar doble con una cara frontal.",
-    ),
     "videos": (
         "Analisis de videos",
         "Elegi un archivo local o pega una URL de YouTube. El sistema muestrea frames, descarta caras de baja calidad, agrupa apariciones y compara embeddings promedio contra famosos.",
     ),
     "source": (
         "Fuente en vivo",
-        "Webcam usa OpenCV, Pantalla captura el monitor y Ventana captura una app por titulo. Si una ventana no aparece, usa Refrescar y verifica que no este minimizada.",
+        "La app usa solo la webcam de OpenCV. Si la camara no responde, cambia el indice desde el panel lateral y presiona Cambiar camara.",
     ),
 }
 
