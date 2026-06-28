@@ -5,7 +5,7 @@ from .training_panel import add_training_tab
 from .video_panel import add_video_analysis_tab
 
 
-def build_main_window(dpg, owner, video_w: int, video_h: int) -> None:
+def build_main_window(dpg, owner, video_w: int, video_h: int, video_texture_tag: str) -> None:
     with dpg.window(tag="main_window", label="TP Integrador - Reconocimiento Facial", no_close=True):
         with dpg.group(horizontal=True):
             with dpg.child_window(tag="sidebar_panel", width=340, height=820, border=True):
@@ -13,7 +13,7 @@ def build_main_window(dpg, owner, video_w: int, video_h: int) -> None:
                 dpg.add_text("Reconocimiento facial", tag="subtitle_text", color=(120, 210, 255))
                 dpg.add_separator()
 
-                with dpg.tab_bar(tag="workflow_tabs"):
+                with dpg.tab_bar(tag="workflow_tabs", callback=owner._on_workflow_tab_changed):
                     add_training_tab(dpg, owner)
                     add_recognition_tab(dpg, owner)
                     add_video_analysis_tab(dpg, owner)
@@ -25,24 +25,44 @@ def build_main_window(dpg, owner, video_w: int, video_h: int) -> None:
                 dpg.add_text("", tag="stats_text", wrap=300, color=(160, 170, 180))
 
             with dpg.child_window(tag="video_panel", width=1308, height=820, border=False):
-                dpg.add_image("video_texture", tag="video_image", width=video_w, height=video_h)
-
-
-def add_video_file_dialog(dpg, owner) -> None:
-    with dpg.file_dialog(
-        directory_selector=False,
-        show=False,
-        callback=owner._on_video_file_selected,
-        tag="video_file_dialog",
-        width=720,
-        height=460,
-    ):
-        dpg.add_file_extension(".mp4", color=(90, 210, 255, 255))
-        dpg.add_file_extension(".avi", color=(90, 210, 255, 255))
-        dpg.add_file_extension(".mov", color=(90, 210, 255, 255))
-        dpg.add_file_extension(".mkv", color=(90, 210, 255, 255))
+                dpg.add_image(video_texture_tag, tag="video_image", width=video_w, height=video_h)
+                with dpg.group(tag="video_playback_controls", show=False):
+                    dpg.add_slider_float(
+                        tag="video_seek_slider",
+                        callback=owner._seek_actor_video,
+                        min_value=0.0,
+                        max_value=1.0,
+                        default_value=0.0,
+                        format="",
+                        enabled=False,
+                        width=max(video_w, 240),
+                    )
+                    with dpg.group(horizontal=True):
+                        dpg.add_button(
+                            label="<< 5s",
+                            tag="video_skip_back_button",
+                            callback=owner._skip_actor_video,
+                            user_data=-5.0,
+                            enabled=False,
+                            width=78,
+                        )
+                        dpg.add_button(
+                            label=">",
+                            tag="video_play_pause_button",
+                            callback=owner._toggle_actor_video_playback,
+                            enabled=False,
+                            width=54,
+                        )
+                        dpg.add_button(
+                            label="5s >>",
+                            tag="video_skip_forward_button",
+                            callback=owner._skip_actor_video,
+                            user_data=5.0,
+                            enabled=False,
+                            width=78,
+                        )
+                        dpg.add_text("00:00 / 00:00", tag="video_playback_time")
 
 
 def build_support_windows(dpg, owner) -> None:
-    add_video_file_dialog(dpg, owner)
     add_help_modal(dpg, owner)

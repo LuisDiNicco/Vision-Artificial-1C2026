@@ -7,7 +7,7 @@ from ..backend.clasificador import Prediction
 from ..backend.deteccion import FaceDetection
 
 
-LANDMARK_DRAW_STEP = 6
+LANDMARK_DRAW_STEP = 1
 FONT = cv2.FONT_HERSHEY_SIMPLEX
 COLOR_PANEL = (28, 31, 36)
 COLOR_PANEL_2 = (44, 49, 57)
@@ -42,8 +42,9 @@ def draw_face_annotations(
         cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2, cv2.LINE_AA)
         cv2.rectangle(frame, (x1, y1), (x2, min(y2, y1 + 4)), color, -1)
 
-        for point in detection.landmarks[::LANDMARK_DRAW_STEP]:
-            cv2.circle(frame, (int(point[0]), int(point[1])), 1, (0, 255, 180), -1, cv2.LINE_AA)
+        landmark_points = detection.landmarks if detection.landmarks_are_sampled else detection.landmarks[::LANDMARK_DRAW_STEP]
+        for point in landmark_points:
+            cv2.circle(frame, (int(point[0]), int(point[1])), 2, (0, 255, 180), -1, cv2.LINE_AA)
 
         if prediction:
             text = f"{prediction.label} {prediction.confidence * 100:.1f}%"

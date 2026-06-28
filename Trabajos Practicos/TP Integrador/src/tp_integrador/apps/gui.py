@@ -2,6 +2,7 @@ import argparse
 from collections import deque
 from pathlib import Path
 import sys
+import threading
 import time
 
 from ..backend.logging_config import configure_native_logs
@@ -19,14 +20,24 @@ from ..backend.data import MODEL_PATH, count_embeddings_for_person, load_embeddi
 from ..backend.deteccion import MediaPipeFaceDetector, largest_face
 from ..backend.embeddings import ArcFaceEmbedder
 from ..backend.face_quality import assess_face_quality
-from ..backend.video_inputs import download_youtube_video, looks_like_youtube_url
+from ..backend.video_analysis_cache import (
+    analysis_at_time,
+    analysis_cache_path,
+    load_video_analysis,
+    make_analysis_record,
+    prepare_analysis_timeline,
+    save_video_analysis,
+)
+from ..backend.video_inputs import VIDEO_DOWNLOAD_DIR, download_youtube_video, looks_like_youtube_url
 from ..frontend.gui.help import HELP_TOPICS
 from ..frontend.gui.layout import build_main_window, build_support_windows
+from ..frontend.native_file_dialog import choose_video_file
 from ..frontend.video_overlay import draw_face_annotations
 
 
 VIDEO_W = 1280
 VIDEO_H = 720
+VIDEO_TEXTURE_TIERS = ((960, 540), (1280, 720), (1920, 1080))
 BASE_VIEWPORT_W = 1680
 BASE_VIEWPORT_H = 900
 SMOOTHING_WINDOW = 7
@@ -35,6 +46,10 @@ DETECTION_INTERVAL_REGISTRATION = 1
 DETECTION_INTERVAL_RECOGNITION = 1
 RECOGNITION_INTERVAL = 3
 REGISTRATION_MIN_QUALITY_SCORE = 0.62
+VIDEO_UNCERTAIN_GRACE_SAMPLES = 2
+VIDEO_MISSING_FACE_GRACE_FRAMES = 10
+VIDEO_FACE_CONTINUITY_MIN_IOU = 0.18
+VIDEO_DETECTION_PERIOD_SECONDS = 0.10
 
 
 def parse_args() -> argparse.Namespace:
@@ -79,11 +94,29 @@ class FaceRecognitionGui:
         self.video_playback_frame_index = 0
         self.video_playback_last_predictions = []
         self.video_playback_last_detections = []
+        self.video_playback_last_detection_seconds = float("-inf")
         self.video_playback_detection_interval = 1
         self.video_playback_recognition_interval = 8
         self.video_playback_min_similarity = 0.34
         self.video_playback_frame_duration = 1.0 / 25.0
         self.video_playback_last_frame_time = 0.0
+        self.video_playback_paused = False
+        self.video_playback_seek_pending = False
+        self.video_playback_fps = 25.0
+        self.video_playback_duration = 0.0
+        self.video_playback_clock_base = 0.0
+        self.video_playback_clock_started_at = 0.0
+        self.video_playback_displayed_frame = -1
+        self.video_playback_current_seconds = 0.0
+        self.video_playback_recognition_period = 0.35
+        self.video_playback_last_recognition_seconds = float("-inf")
+        self.video_playback_lock = threading.RLock()
+        self.video_recognition_lock = threading.RLock()
+        self.video_recent_embeddings = deque(maxlen=EMBEDDING_SMOOTHING_WINDOW)
+        self.video_recent_predictions = deque(maxlen=SMOOTHING_WINDOW)
+        self.video_uncertain_samples = 0
+        self.video_missing_face_frames = 0
+        self.video_last_face_bbox = None
         self.static_display_frame = None
         self.recent_embeddings = deque(maxlen=EMBEDDING_SMOOTHING_WINDOW)
         self.recent_predictions = deque(maxlen=SMOOTHING_WINDOW)
@@ -92,6 +125,24 @@ class FaceRecognitionGui:
         self.last_predictions = []
         self.video_display_w = VIDEO_W
         self.video_display_h = VIDEO_H
+        self.video_source_w = VIDEO_W
+        self.video_source_h = VIDEO_H
+        self.video_texture_w = VIDEO_W
+        self.video_texture_h = VIDEO_H
+        self.video_texture_tag = video_texture_tag(VIDEO_W, VIDEO_H)
+        self.video_controls_visible = False
+        self.video_playback_uses_cache = False
+        self.video_cached_times = []
+        self.video_cached_records = []
+        self.video_preprocess_lock = threading.RLock()
+        self.video_preprocess_active = False
+        self.video_preprocess_progress = 0.0
+        self.video_preprocess_overlay = "Esperando..."
+        self.video_preprocess_result = None
+        self.video_preprocess_error = None
+        self.video_preprocess_finished_pending = False
+        self.video_preprocess_cancel = threading.Event()
+        self.video_preprocess_thread = None
 
         self.cap = None
         self.detector = MediaPipeFaceDetector(max_faces=4, min_detection_confidence=0.70, min_tracking_confidence=0.70)
@@ -115,11 +166,11 @@ class FaceRecognitionGui:
         dpg.create_context()
         self._setup_fonts()
 
-        with dpg.texture_registry(show=False):
+        with dpg.texture_registry(show=False, tag="video_texture_registry"):
             blank = np.zeros((VIDEO_H, VIDEO_W, 4), dtype=np.float32)
-            dpg.add_dynamic_texture(VIDEO_W, VIDEO_H, blank.ravel(), tag="video_texture")
+            dpg.add_dynamic_texture(VIDEO_W, VIDEO_H, blank.ravel(), tag=self.video_texture_tag)
 
-        build_main_window(dpg, self, VIDEO_W, VIDEO_H)
+        build_main_window(dpg, self, VIDEO_W, VIDEO_H, self.video_texture_tag)
         build_support_windows(dpg, self)
 
         self._apply_theme()
@@ -169,6 +220,8 @@ class FaceRecognitionGui:
 
     def _render_frame(self) -> None:
         dpg = self.dpg
+        if self._poll_video_preprocessing():
+            return
         if self.video_playback_cap is not None:
             self._render_actor_video_frame()
             return
@@ -394,13 +447,16 @@ class FaceRecognitionGui:
         self._set_status("Ingresa nombre y apellido de la nueva persona.")
 
     def _show_video_file_dialog(self, *args) -> None:
-        self.dpg.show_item("video_file_dialog")
-
-    def _on_video_file_selected(self, sender, app_data, user_data=None) -> None:
-        path = app_data.get("file_path_name", "") if isinstance(app_data, dict) else ""
-        if not path:
+        try:
+            VIDEO_DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
+            initial_path = self.video_file_path or str(VIDEO_DOWNLOAD_DIR)
+            path = choose_video_file(initial_path)
+        except Exception as exc:
+            self._set_status(f"No se pudo abrir el explorador de archivos: {exc}")
             return
-        self.video_file_path = path
+        if path is None:
+            return
+        self.video_file_path = str(path)
         self.youtube_video_path = None
         if self.dpg.does_item_exist("youtube_url_input"):
             self.dpg.set_value("youtube_url_input", "")
@@ -408,14 +464,205 @@ class FaceRecognitionGui:
         self.dpg.set_value("video_file_text", display_name)
         self._set_status(f"Video seleccionado: {display_name}")
 
-    def _analyze_selected_video(self, *args) -> None:
+    def _preprocess_selected_video(self, *args) -> None:
+        with self.video_preprocess_lock:
+            if self.video_preprocess_active:
+                self._set_status("Ya hay un video en proceso de analisis.")
+                return
         video_path = self._resolve_actor_video_path()
         if video_path is None:
             return
-        index = self._load_celebrity_index()
-        if index is None:
+        if self._load_celebrity_index() is None:
             self._set_status("Primero cachea los embeddings de famosos.")
             return
+
+        sample_seconds = float(self.dpg.get_value("video_sample_seconds"))
+        min_similarity = float(self.dpg.get_value("video_min_similarity"))
+        cache_path = analysis_cache_path(Path(video_path), sample_seconds, min_similarity)
+        if cache_path.exists():
+            self._set_status("El analisis de este video ya esta guardado en cache.")
+            return
+
+        self._stop_actor_video()
+        self.video_preprocess_cancel.clear()
+        with self.video_preprocess_lock:
+            self.video_preprocess_active = True
+            self.video_preprocess_progress = 0.0
+            self.video_preprocess_overlay = "Preparando modelos..."
+            self.video_preprocess_result = None
+            self.video_preprocess_error = None
+            self.video_preprocess_finished_pending = False
+        self._set_preprocess_controls(False)
+        self.dpg.configure_item("video_preprocess_progress", show=True)
+        self.dpg.set_value("video_preprocess_progress", 0.0)
+        self.dpg.configure_item("video_preprocess_progress", overlay="Preparando modelos...")
+        self._set_status("Preprocesando video. La reproduccion quedara disponible al finalizar.")
+
+        thread = threading.Thread(
+            target=self._preprocess_video_worker,
+            args=(Path(video_path), cache_path, sample_seconds, min_similarity),
+            name="video-preprocessing",
+            daemon=True,
+        )
+        self.video_preprocess_thread = thread
+        thread.start()
+
+    def _preprocess_video_worker(
+        self,
+        video_path: Path,
+        cache_path: Path,
+        sample_seconds: float,
+        min_similarity: float,
+    ) -> None:
+        cap = None
+        detector = None
+        started_at = time.monotonic()
+        try:
+            if self.embedder is None:
+                self.embedder = ArcFaceEmbedder()
+            detector = MediaPipeFaceDetector(max_faces=4, min_detection_confidence=0.70, min_tracking_confidence=0.70)
+            cap = cv2.VideoCapture(str(video_path))
+            if not cap.isOpened():
+                raise RuntimeError("No se pudo abrir el video para preprocesarlo.")
+
+            fps = max(float(cap.get(cv2.CAP_PROP_FPS) or 25.0), 1.0)
+            total_frames = max(int(cap.get(cv2.CAP_PROP_FRAME_COUNT)), 0)
+            if total_frames <= 0:
+                raise RuntimeError("El video no informa una cantidad valida de frames.")
+            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            duration = total_frames / fps
+            step_frames = max(1, int(round(fps * VIDEO_DETECTION_PERIOD_SECONDS)))
+            targets = range(0, total_frames, step_frames)
+            sample_count = max(1, (total_frames + step_frames - 1) // step_frames)
+
+            self.video_playback_min_similarity = min_similarity
+            self.video_playback_recognition_period = sample_seconds
+            self.video_playback_last_recognition_seconds = float("-inf")
+            self.video_playback_last_predictions = []
+            self._reset_video_recognition_history()
+            records = []
+
+            for sample_index, target_frame in enumerate(targets):
+                if self.video_preprocess_cancel.is_set():
+                    raise RuntimeError("Analisis cancelado.")
+                decoder_frame = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
+                for _ in range(max(0, target_frame - decoder_frame)):
+                    if not cap.grab():
+                        break
+                ok, frame = cap.read()
+                if not ok:
+                    break
+
+                seconds = target_frame / fps
+                self.video_playback_current_seconds = seconds
+                detections = detector.detect(frame)
+                predictions = self._get_celebrity_video_predictions(frame, detections, seconds)
+                records.append(make_analysis_record(seconds, detections, predictions))
+
+                progress = min(1.0, (sample_index + 1) / sample_count)
+                elapsed = time.monotonic() - started_at
+                remaining = elapsed * (1.0 - progress) / progress if progress > 0 else 0.0
+                overlay = f"{progress * 100:.0f}% | restante aprox. {format_video_time(remaining)}"
+                with self.video_preprocess_lock:
+                    self.video_preprocess_progress = progress
+                    self.video_preprocess_overlay = overlay
+
+            save_video_analysis(
+                cache_path,
+                video_path,
+                duration,
+                fps,
+                width,
+                height,
+                sample_seconds,
+                min_similarity,
+                records,
+            )
+            result = cache_path
+            error = None
+        except Exception as exc:
+            result = None
+            error = str(exc)
+        finally:
+            if cap is not None:
+                cap.release()
+            if detector is not None:
+                detector.close()
+            self._reset_video_recognition_history()
+            with self.video_preprocess_lock:
+                self.video_preprocess_active = False
+                self.video_preprocess_result = result
+                self.video_preprocess_error = error
+                self.video_preprocess_finished_pending = True
+
+    def _poll_video_preprocessing(self) -> bool:
+        with self.video_preprocess_lock:
+            active = self.video_preprocess_active
+            progress = self.video_preprocess_progress
+            overlay = self.video_preprocess_overlay
+            finished = self.video_preprocess_finished_pending
+            result = self.video_preprocess_result
+            error = self.video_preprocess_error
+            if finished:
+                self.video_preprocess_finished_pending = False
+
+        if self.dpg.does_item_exist("video_preprocess_progress") and (active or finished):
+            self.dpg.configure_item("video_preprocess_progress", show=True, overlay=overlay)
+            self.dpg.set_value("video_preprocess_progress", progress)
+        if finished:
+            self._set_preprocess_controls(True)
+            if error:
+                self._set_status(f"No se pudo preprocesar el video: {error}")
+            else:
+                self.dpg.set_value("video_preprocess_progress", 1.0)
+                self.dpg.configure_item("video_preprocess_progress", overlay="Analisis completo - guardado en cache")
+                self._set_status(f"Analisis terminado y guardado: {Path(result).name}")
+        return active
+
+    def _set_preprocess_controls(self, enabled: bool) -> None:
+        for tag in (
+            "choose_video_button",
+            "analyze_video_button",
+            "preprocess_video_button",
+            "live_video_button",
+        ):
+            if self.dpg.does_item_exist(tag):
+                self.dpg.configure_item(tag, enabled=enabled)
+
+    def _on_workflow_tab_changed(self, sender, app_data, user_data=None) -> None:
+        video_tab_id = self.dpg.get_alias_id("video_workflow_tab")
+        was_visible = self.video_controls_visible
+        self.video_controls_visible = app_data in {video_tab_id, "video_workflow_tab"}
+        if was_visible and not self.video_controls_visible and self.video_playback_cap is not None:
+            self._stop_actor_video()
+            self.static_display_frame = None
+            self._set_status("Vista en vivo restaurada.")
+        if self.dpg.does_item_exist("video_playback_controls"):
+            self.dpg.configure_item("video_playback_controls", show=self.video_controls_visible)
+        self._layout_to_viewport()
+
+    def _analyze_selected_video(self, *args) -> None:
+        self._start_selected_video()
+
+    def _start_selected_video(self) -> None:
+        video_path = self._resolve_actor_video_path()
+        if video_path is None:
+            return
+        sample_seconds = float(self.dpg.get_value("video_sample_seconds"))
+        min_similarity = float(self.dpg.get_value("video_min_similarity"))
+        cached_payload = None
+        cache_path = analysis_cache_path(Path(video_path), sample_seconds, min_similarity)
+        if cache_path.exists():
+            try:
+                cached_payload = load_video_analysis(cache_path)
+            except (OSError, ValueError):
+                cached_payload = None
+        if cached_payload is None:
+            index = self._load_celebrity_index()
+            if index is None:
+                self._set_status("Primero cachea los embeddings de famosos.")
+                return
 
         next_cap = cv2.VideoCapture(str(video_path))
         if not next_cap.isOpened():
@@ -423,19 +670,42 @@ class FaceRecognitionGui:
             self._set_status(f"No se pudo abrir el video: {video_path}")
             return
         self._stop_actor_video()
-        self.video_playback_cap = next_cap
-        self.video_playback_path = str(video_path)
-        self.video_playback_frame_index = 0
-        self.video_playback_last_predictions = []
-        self.video_playback_last_detections = []
-        self.video_playback_min_similarity = float(self.dpg.get_value("video_min_similarity"))
-        sample_seconds = float(self.dpg.get_value("video_sample_seconds"))
-        fps = next_cap.get(cv2.CAP_PROP_FPS) or 25.0
-        self.video_playback_frame_duration = 1.0 / max(float(fps), 1.0)
-        self.video_playback_last_frame_time = 0.0
-        self.video_playback_recognition_interval = max(1, int(round(fps * sample_seconds)))
+        with self.video_playback_lock:
+            self.video_playback_cap = next_cap
+            self.video_playback_path = str(video_path)
+            self.video_playback_frame_index = 0
+            self.video_playback_last_predictions = []
+            self.video_playback_last_detections = []
+            self.video_playback_last_detection_seconds = float("-inf")
+            self.video_playback_min_similarity = min_similarity
+            fps = next_cap.get(cv2.CAP_PROP_FPS) or 25.0
+            self.video_playback_fps = max(float(fps), 1.0)
+            frame_count = max(float(next_cap.get(cv2.CAP_PROP_FRAME_COUNT)), 0.0)
+            self.video_playback_duration = frame_count / self.video_playback_fps if frame_count else 0.0
+            self.video_playback_frame_duration = 1.0 / self.video_playback_fps
+            self.video_playback_last_frame_time = 0.0
+            self.video_playback_paused = False
+            self.video_playback_seek_pending = False
+            self.video_playback_clock_base = 0.0
+            self.video_playback_clock_started_at = time.monotonic()
+            self.video_playback_displayed_frame = -1
+            self.video_playback_current_seconds = 0.0
+            self.video_playback_recognition_period = sample_seconds
+            self.video_playback_last_recognition_seconds = float("-inf")
+            self.video_playback_recognition_interval = max(1, int(round(fps * sample_seconds)))
+            self.video_playback_uses_cache = cached_payload is not None
+            if cached_payload is not None:
+                self.video_cached_times, self.video_cached_records = prepare_analysis_timeline(cached_payload)
+            else:
+                self.video_cached_times = []
+                self.video_cached_records = []
+        self._reset_video_recognition_history()
         self.static_display_frame = None
-        self._embedder()
+        if cached_payload is None:
+            self._embedder()
+        with self.video_playback_lock:
+            self.video_playback_clock_started_at = time.monotonic()
+        self._configure_playback_controls(active=True)
         self._set_status("Reproduciendo video con reconocimiento de famosos.")
 
     def _return_to_live_video(self, *args) -> None:
@@ -444,59 +714,276 @@ class FaceRecognitionGui:
         self._set_status("Vista en vivo restaurada.")
 
     def _stop_actor_video(self) -> None:
-        if self.video_playback_cap is not None:
-            self.video_playback_cap.release()
-        self.video_playback_cap = None
-        self.video_playback_path = None
-        self.video_playback_last_predictions = []
-        self.video_playback_last_detections = []
-        self.video_playback_frame_index = 0
-        self.video_playback_last_frame_time = 0.0
+        with self.video_playback_lock:
+            if self.video_playback_cap is not None:
+                self.video_playback_cap.release()
+            self.video_playback_cap = None
+            self.video_playback_path = None
+            self.video_playback_last_predictions = []
+            self.video_playback_last_detections = []
+            self.video_playback_last_detection_seconds = float("-inf")
+            self.video_playback_frame_index = 0
+            self.video_playback_last_frame_time = 0.0
+            self.video_playback_paused = False
+            self.video_playback_seek_pending = False
+            self.video_playback_duration = 0.0
+            self.video_playback_clock_base = 0.0
+            self.video_playback_clock_started_at = 0.0
+            self.video_playback_displayed_frame = -1
+            self.video_playback_current_seconds = 0.0
+            self.video_playback_last_recognition_seconds = float("-inf")
+            self.video_playback_uses_cache = False
+            self.video_cached_times = []
+            self.video_cached_records = []
+        self._reset_video_recognition_history()
+        self._configure_playback_controls(active=False)
+
+    def _toggle_actor_video_playback(self, *args) -> None:
+        with self.video_playback_lock:
+            if self.video_playback_cap is None:
+                return
+            now = time.monotonic()
+            if self.video_playback_paused:
+                self.video_playback_clock_started_at = now
+                self.video_playback_paused = False
+            else:
+                self.video_playback_clock_base = self._playback_position_locked(now)
+                self.video_playback_paused = True
+            paused = self.video_playback_paused
+            self.video_playback_last_frame_time = now
+        self.dpg.configure_item(
+            "video_play_pause_button",
+            label=">" if paused else "||",
+        )
+        state = "en pausa" if paused else "reanudado"
+        self._set_status(f"Video {state}.")
+
+    def _seek_actor_video(self, sender, app_data, user_data=None) -> None:
+        self._seek_actor_video_to(float(app_data))
+
+    def _skip_actor_video(self, sender, app_data, user_data=None) -> None:
+        offset_seconds = float(user_data or 0.0)
+        with self.video_playback_lock:
+            if self.video_playback_cap is None:
+                return
+            current_seconds = self._playback_position_locked()
+        self._seek_actor_video_to(current_seconds + offset_seconds)
+
+    def _seek_actor_video_to(self, requested_seconds: float) -> None:
+        with self.video_playback_lock:
+            if self.video_playback_cap is None:
+                return
+            seconds = max(0.0, min(requested_seconds, self.video_playback_duration))
+            target_frame = max(0, int(round(seconds * self.video_playback_fps)))
+            self.video_playback_cap.set(cv2.CAP_PROP_POS_FRAMES, target_frame)
+            self.video_playback_frame_index = target_frame
+            self.video_playback_displayed_frame = target_frame - 1
+            self.video_playback_current_seconds = seconds
+            self.video_playback_clock_base = seconds
+            self.video_playback_clock_started_at = time.monotonic()
+            self.video_playback_last_recognition_seconds = float("-inf")
+            self.video_playback_last_predictions = []
+            self.video_playback_last_detections = []
+            self.video_playback_last_detection_seconds = float("-inf")
+            self.video_playback_last_frame_time = 0.0
+            self.video_playback_seek_pending = True
+        self._reset_video_recognition_history()
+        self._update_playback_time(seconds)
+
+    def _playback_position_locked(self, now: float | None = None) -> float:
+        if self.video_playback_paused:
+            position = self.video_playback_clock_base
+        else:
+            now = time.monotonic() if now is None else now
+            position = self.video_playback_clock_base + max(0.0, now - self.video_playback_clock_started_at)
+        if self.video_playback_duration:
+            position = min(position, self.video_playback_duration)
+        return max(0.0, position)
+
+    def _configure_playback_controls(self, active: bool) -> None:
+        if not self.dpg.does_item_exist("video_play_pause_button"):
+            return
+        self.dpg.configure_item("video_play_pause_button", enabled=active, label="||" if active else ">")
+        self.dpg.configure_item("video_skip_back_button", enabled=active)
+        self.dpg.configure_item("video_skip_forward_button", enabled=active)
+        self.dpg.configure_item("video_seek_slider", enabled=active)
+        self.dpg.configure_item(
+            "video_seek_slider",
+            min_value=0.0,
+            max_value=max(self.video_playback_duration, 1.0),
+        )
+        self.dpg.set_value("video_seek_slider", 0.0)
+        self._update_playback_time(0.0)
+
+    def _update_playback_time(self, seconds: float) -> None:
+        if self.dpg.does_item_exist("video_playback_time"):
+            self.dpg.set_value(
+                "video_playback_time",
+                f"{format_video_time(seconds)} / {format_video_time(self.video_playback_duration)}",
+            )
 
     def _render_actor_video_frame(self) -> None:
-        now = time.monotonic()
-        if self.video_playback_last_frame_time and now - self.video_playback_last_frame_time < self.video_playback_frame_duration:
-            return
-        self.video_playback_last_frame_time = now
-
-        ok, frame = self.video_playback_cap.read()
+        with self.video_playback_lock:
+            if self.video_playback_cap is None:
+                return
+            if self.video_playback_paused and not self.video_playback_seek_pending:
+                return
+            current_seconds = self._playback_position_locked()
+            if self.video_playback_duration and current_seconds >= self.video_playback_duration:
+                reached_end = True
+            else:
+                reached_end = False
+            target_frame = max(0, int(current_seconds * self.video_playback_fps))
+            if not self.video_playback_seek_pending and target_frame <= self.video_playback_displayed_frame:
+                return
+            if reached_end:
+                ok = False
+                frame = None
+            else:
+                decoder_frame = int(self.video_playback_cap.get(cv2.CAP_PROP_POS_FRAMES))
+                frames_behind = target_frame - decoder_frame
+                if frames_behind > 2:
+                    if frames_behind <= int(self.video_playback_fps):
+                        for _ in range(frames_behind):
+                            if not self.video_playback_cap.grab():
+                                break
+                    else:
+                        self.video_playback_cap.set(cv2.CAP_PROP_POS_FRAMES, target_frame)
+                elif frames_behind < -1:
+                    self.video_playback_cap.set(cv2.CAP_PROP_POS_FRAMES, target_frame)
+                ok, frame = self.video_playback_cap.read()
+                actual_frame = max(0, int(self.video_playback_cap.get(cv2.CAP_PROP_POS_FRAMES)) - 1)
+                self.video_playback_frame_index = actual_frame
+                self.video_playback_displayed_frame = actual_frame
+                self.video_playback_current_seconds = current_seconds
+            self.video_playback_seek_pending = False
         if not ok:
             self._stop_actor_video()
             self._set_status("Fin del video. Vista en vivo restaurada.")
             return
 
-        self.video_playback_frame_index += 1
-        detections = self.detector.detect(frame)
-        predictions = self._get_celebrity_video_predictions(frame, detections)
+        self.dpg.set_value("video_seek_slider", current_seconds)
+        self._update_playback_time(current_seconds)
+        if self.video_playback_uses_cache:
+            detections, predictions = analysis_at_time(
+                self.video_cached_times,
+                self.video_cached_records,
+                current_seconds,
+            )
+        else:
+            detections = self._get_video_detections(frame, current_seconds)
+            predictions = self._get_celebrity_video_predictions(frame, detections, current_seconds)
         draw_face_annotations(frame, detections, predictions)
         self._update_video_texture(frame)
         self._update_actor_video_stats(len(detections), predictions)
 
-    def _get_celebrity_video_predictions(self, frame, detections):
+    def _get_video_detections(self, frame, current_seconds: float):
+        if current_seconds - self.video_playback_last_detection_seconds < VIDEO_DETECTION_PERIOD_SECONDS:
+            return self.video_playback_last_detections
+        self.video_playback_last_detection_seconds = current_seconds
+        self.video_playback_last_detections = self.detector.detect(frame)
+        return self.video_playback_last_detections
+
+    def _get_celebrity_video_predictions(self, frame, detections, current_seconds: float | None = None):
+        with self.video_recognition_lock:
+            current_seconds = self.video_playback_current_seconds if current_seconds is None else current_seconds
+            if not detections:
+                self.video_missing_face_frames += 1
+                if self.video_missing_face_frames > VIDEO_MISSING_FACE_GRACE_FRAMES:
+                    self._reset_video_recognition_history()
+                    self.video_playback_last_predictions = []
+                return []
+
+            self.video_missing_face_frames = 0
+            if len(detections) == 1:
+                current_bbox = detections[0].bbox
+                if (
+                    self.video_last_face_bbox is not None
+                    and bbox_iou(self.video_last_face_bbox, current_bbox) < VIDEO_FACE_CONTINUITY_MIN_IOU
+                ):
+                    self._reset_video_recognition_history()
+                    self.video_playback_last_predictions = []
+                self.video_last_face_bbox = current_bbox
+            else:
+                self.video_last_face_bbox = None
+
+            if (
+                current_seconds - self.video_playback_last_recognition_seconds < self.video_playback_recognition_period
+                and len(self.video_playback_last_predictions) == len(detections)
+            ):
+                return self.video_playback_last_predictions
+            self.video_playback_last_recognition_seconds = current_seconds
+
+            index = self._load_celebrity_index()
+            predictions = []
+            for detection in detections:
+                quality = assess_face_quality(frame, detection)
+                if not quality.ok:
+                    if len(detections) == 1:
+                        self.video_recent_embeddings.clear()
+                        uncertain = self._video_uncertain_prediction("calidad")
+                        if uncertain.label != "desconocido":
+                            self.video_playback_last_predictions = [uncertain]
+                            return [uncertain]
+                    predictions.append(Prediction("desconocido", 0.0, float("inf"), method="calidad"))
+                    continue
+
+                embedding, _ = self._embedder().embed_face(frame, detection)
+                if len(detections) == 1:
+                    self.video_recent_embeddings.append(embedding)
+                    embedding = average_embeddings(self.video_recent_embeddings)
+
+                matches = index.top_unique(embedding, limit=1) if index is not None else []
+                if not matches or matches[0].similarity < self.video_playback_min_similarity:
+                    if len(detections) == 1:
+                        uncertain = self._video_uncertain_prediction("umbral")
+                        if uncertain.label != "desconocido":
+                            self.video_playback_last_predictions = [uncertain]
+                            return [uncertain]
+                    predictions.append(Prediction("desconocido", 0.0, float("inf"), method="famosos"))
+                    continue
+                match = matches[0]
+                self.video_uncertain_samples = 0
+                confidence = float(np.clip((match.similarity - self.video_playback_min_similarity) / 0.30, 0.0, 1.0))
+                predictions.append(Prediction(match.name, confidence, match.distance, method="famosos"))
+
+            if len(predictions) == 1:
+                self.video_recent_predictions.append(predictions[0])
+                predictions[0] = smooth_single_prediction(self.video_recent_predictions)
+                if len(self.video_recent_embeddings) > 1 and predictions[0].label != "desconocido":
+                    predictions[0].method = f"{predictions[0].method}+promedio"
+            else:
+                self._reset_video_recognition_history()
+
+            self.video_playback_last_predictions = predictions
+            return predictions
+
+    def _reset_video_recognition_history(self) -> None:
+        with self.video_recognition_lock:
+            self.video_recent_embeddings.clear()
+            self.video_recent_predictions.clear()
+            self.video_uncertain_samples = 0
+            self.video_missing_face_frames = 0
+            self.video_last_face_bbox = None
+
+    def _video_uncertain_prediction(self, reason: str) -> Prediction:
+        self.video_uncertain_samples += 1
         if (
-            self.video_playback_frame_index % self.video_playback_recognition_interval != 0
-            and len(self.video_playback_last_predictions) == len(detections)
+            self.video_uncertain_samples <= VIDEO_UNCERTAIN_GRACE_SAMPLES
+            and len(self.video_playback_last_predictions) == 1
+            and self.video_playback_last_predictions[0].label != "desconocido"
         ):
-            return self.video_playback_last_predictions
+            previous = self.video_playback_last_predictions[0]
+            return Prediction(
+                previous.label,
+                previous.confidence * 0.90,
+                previous.distance,
+                method=f"{reason}+histeresis",
+            )
 
-        index = self._load_celebrity_index()
-        predictions = []
-        for detection in detections:
-            quality = assess_face_quality(frame, detection)
-            if not quality.ok:
-                predictions.append(Prediction("desconocido", 0.0, float("inf"), method="calidad"))
-                continue
-            embedding, _ = self._embedder().embed_face(frame, detection)
-            matches = index.top_unique(embedding, limit=1) if index is not None else []
-            if not matches or matches[0].similarity < self.video_playback_min_similarity:
-                predictions.append(Prediction("desconocido", 0.0, float("inf"), method="famosos"))
-                continue
-            match = matches[0]
-            confidence = float(np.clip((match.similarity - self.video_playback_min_similarity) / 0.30, 0.0, 1.0))
-            predictions.append(Prediction(match.name, confidence, match.distance, method="famosos"))
-
-        self.video_playback_last_predictions = predictions
-        return predictions
+        self.video_recent_embeddings.clear()
+        self.video_recent_predictions.clear()
+        return Prediction("desconocido", 0.0, float("inf"), method=reason)
 
     def _load_celebrity_index(self):
         if self.celebrity_index is not None:
@@ -604,10 +1091,49 @@ class FaceRecognitionGui:
         self.dpg.set_value("person_count_text", f"Embeddings guardados: {count}")
 
     def _update_video_texture(self, frame_bgr) -> None:
-        frame = cv2.resize(frame_bgr, (VIDEO_W, VIDEO_H), interpolation=cv2.INTER_LINEAR)
+        source_h, source_w = frame_bgr.shape[:2]
+        self.video_source_w = source_w
+        self.video_source_h = source_h
+        self._ensure_source_appropriate_texture()
+        texture_w = self.video_texture_w
+        texture_h = self.video_texture_h
+        scale = min(texture_w / max(source_w, 1), texture_h / max(source_h, 1))
+        target_w = max(1, int(round(source_w * scale)))
+        target_h = max(1, int(round(source_h * scale)))
+        interpolation = cv2.INTER_AREA if scale < 1.0 else cv2.INTER_LINEAR
+        resized = cv2.resize(frame_bgr, (target_w, target_h), interpolation=interpolation)
+        frame = np.zeros((texture_h, texture_w, 3), dtype=np.uint8)
+        x = (texture_w - target_w) // 2
+        y = (texture_h - target_h) // 2
+        frame[y : y + target_h, x : x + target_w] = resized
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGBA)
         data = (frame.astype(np.float32) / 255.0).ravel()
-        self.dpg.set_value("video_texture", data)
+        self.dpg.set_value(self.video_texture_tag, data)
+
+    def _ensure_video_texture(self, display_w: int, display_h: int) -> None:
+        texture_w, texture_h = select_video_texture_size(display_w, display_h)
+        if (texture_w, texture_h) == (self.video_texture_w, self.video_texture_h):
+            return
+
+        next_tag = video_texture_tag(texture_w, texture_h)
+        if not self.dpg.does_item_exist(next_tag):
+            blank = np.zeros((texture_h, texture_w, 4), dtype=np.float32)
+            self.dpg.add_dynamic_texture(
+                texture_w,
+                texture_h,
+                blank.ravel(),
+                tag=next_tag,
+                parent="video_texture_registry",
+            )
+        self.dpg.configure_item("video_image", texture_tag=next_tag)
+        self.video_texture_w = texture_w
+        self.video_texture_h = texture_h
+        self.video_texture_tag = next_tag
+
+    def _ensure_source_appropriate_texture(self) -> None:
+        required_w = min(self.video_display_w, max(self.video_source_w, VIDEO_TEXTURE_TIERS[0][0]))
+        required_h = min(self.video_display_h, max(self.video_source_h, VIDEO_TEXTURE_TIERS[0][1]))
+        self._ensure_video_texture(required_w, required_h)
 
     def _on_viewport_resize(self, *args) -> None:
         self._layout_to_viewport()
@@ -623,14 +1149,17 @@ class FaceRecognitionGui:
         sidebar_w = int(np.clip(width * 0.24, 360, 520))
         content_w = max(width - sidebar_w - (margin * 2) - gap, 480)
         content_h = max(height - (margin * 2), 360)
+        controls_h = 72 if self.video_controls_visible else 0
+        available_video_h = max(content_h - controls_h, 240)
         video_w = content_w
         video_h = int(video_w * 9 / 16)
-        if video_h > content_h:
-            video_h = content_h
+        if video_h > available_video_h:
+            video_h = available_video_h
             video_w = int(video_h * 16 / 9)
 
         self.video_display_w = video_w
         self.video_display_h = video_h
+        self._ensure_source_appropriate_texture()
         if self.dpg.does_item_exist("sidebar_panel"):
             self.dpg.configure_item("sidebar_panel", width=sidebar_w, height=content_h)
             button_w = max(120, int((sidebar_w - 34) / 2))
@@ -643,12 +1172,17 @@ class FaceRecognitionGui:
             self.dpg.configure_item("next_camera_button", width=button_w)
             self.dpg.configure_item("choose_video_button", width=-1)
             self.dpg.configure_item("analyze_video_button", width=-1)
+            self.dpg.configure_item("preprocess_video_button", width=-1)
             self.dpg.configure_item("live_video_button", width=-1)
         if self.dpg.does_item_exist("video_panel"):
             self.dpg.configure_item("video_panel", width=content_w, height=content_h)
             self.dpg.configure_item("video_image", width=video_w, height=video_h)
+            self.dpg.configure_item("video_seek_slider", width=max(video_w, 240))
 
     def _close(self) -> None:
+        self.video_preprocess_cancel.set()
+        if self.video_preprocess_thread is not None and self.video_preprocess_thread.is_alive():
+            self.video_preprocess_thread.join(timeout=2.0)
         self._stop_actor_video()
         if self.cap is not None:
             self.cap.release()
@@ -674,6 +1208,38 @@ def average_embeddings(recent_embeddings):
     if norm > 0:
         embedding = embedding / norm
     return embedding.astype(np.float32)
+
+
+def format_video_time(seconds: float) -> str:
+    total_seconds = max(0, int(seconds))
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, secs = divmod(remainder, 60)
+    if hours:
+        return f"{hours:d}:{minutes:02d}:{secs:02d}"
+    return f"{minutes:02d}:{secs:02d}"
+
+
+def select_video_texture_size(display_w: int, display_h: int) -> tuple[int, int]:
+    for width, height in VIDEO_TEXTURE_TIERS:
+        if display_w <= width and display_h <= height:
+            return width, height
+    return VIDEO_TEXTURE_TIERS[-1]
+
+
+def video_texture_tag(width: int, height: int) -> str:
+    return f"video_texture_{width}x{height}"
+
+
+def bbox_iou(first, second) -> float:
+    ax1, ay1, ax2, ay2 = first
+    bx1, by1, bx2, by2 = second
+    intersection_w = max(0, min(ax2, bx2) - max(ax1, bx1))
+    intersection_h = max(0, min(ay2, by2) - max(ay1, by1))
+    intersection = intersection_w * intersection_h
+    first_area = max(0, ax2 - ax1) * max(0, ay2 - ay1)
+    second_area = max(0, bx2 - bx1) * max(0, by2 - by1)
+    union = first_area + second_area - intersection
+    return float(intersection / union) if union > 0 else 0.0
 
 
 def enable_high_dpi() -> None:

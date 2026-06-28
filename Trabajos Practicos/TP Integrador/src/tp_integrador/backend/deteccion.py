@@ -19,6 +19,7 @@ class FaceDetection:
     bbox: Tuple[int, int, int, int]
     landmarks: np.ndarray
     confidence: float
+    landmarks_are_sampled: bool = False
 
 
 MODEL_CACHE_DIR = Path(tempfile.gettempdir()) / "tp_integrador_mediapipe"

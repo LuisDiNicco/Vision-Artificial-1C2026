@@ -41,9 +41,8 @@ def download_youtube_video(url: str, progress_callback=None) -> Path:
             progress_callback("Video descargado. Preparando analisis...")
 
     options = {
-        # Evita formatos separados video+audio porque requieren ffmpeg para mergear.
-        # Para reconocimiento facial alcanza con video; el audio no se usa.
-        "format": "best[ext=mp4][vcodec!=none][acodec!=none]/bestvideo[ext=mp4]/best[ext=mp4]/bestvideo",
+        # Solo se usa imagen: descarga directamente la mejor pista de video.
+        "format": "bestvideo/best[vcodec!=none]",
         "outtmpl": str(VIDEO_DOWNLOAD_DIR / "%(id)s.%(ext)s"),
         "noplaylist": True,
         "quiet": True,
@@ -52,18 +51,31 @@ def download_youtube_video(url: str, progress_callback=None) -> Path:
     }
     with YoutubeDL(options) as ydl:
         info = ydl.extract_info(url, download=True)
-        path = Path(ydl.prepare_filename(info))
-        if path.suffix.lower() != ".mp4":
-            merged = path.with_suffix(".mp4")
-            if merged.exists():
-                path = merged
-        if not path.exists():
-            requested = info.get("requested_downloads") or []
-            for item in requested:
-                candidate = Path(item.get("filepath", ""))
-                if candidate.exists():
-                    path = candidate
-                    break
-        if not path.exists():
+        path = _find_downloaded_video(info, ydl)
+        if path is None:
             raise RuntimeError("yt-dlp termino, pero no se encontro el archivo descargado.")
         return path
+
+
+def _find_downloaded_video(info: dict, ydl) -> Path | None:
+    candidates = []
+    for key in ("filepath", "_filename"):
+        if info.get(key):
+            candidates.append(Path(info[key]))
+    candidates.append(Path(ydl.prepare_filename(info)))
+
+    video_id = str(info.get("id", "")).strip()
+    if video_id:
+        candidates.extend(
+            sorted(
+                VIDEO_DOWNLOAD_DIR.glob(f"{video_id}.*"),
+                key=lambda item: item.stat().st_mtime,
+                reverse=True,
+            )
+        )
+
+    video_suffixes = {".mp4", ".mkv", ".webm", ".mov", ".avi"}
+    for candidate in candidates:
+        if candidate.exists() and candidate.is_file() and candidate.suffix.lower() in video_suffixes:
+            return candidate
+    return None
