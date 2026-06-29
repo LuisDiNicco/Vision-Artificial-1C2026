@@ -20,22 +20,64 @@ class FaceQuality:
     reason: str = ""
 
 
-def assess_face_quality(frame_bgr: np.ndarray, detection: FaceDetection) -> FaceQuality:
+@dataclass(frozen=True)
+class FaceQualityConfig:
+    min_side: int = 96
+    min_eye_distance: float = 34.0
+    min_brightness: float = 45.0
+    max_brightness: float = 220.0
+    min_blur: float = 45.0
+    min_margin: int = 4
+    max_nose_shift: float = 0.22
+    min_mouth_width: float = 0.35
+    min_face_height: float = 0.75
+    max_face_height: float = 2.25
+
+
+# Los videos suelen tener compresion, motion blur y planos menos frontales que
+# una captura de registro. Este perfil solo decide si vale la pena extraer el
+# embedding; la similitud facial sigue siendo quien acepta o rechaza al famoso.
+VIDEO_FACE_QUALITY = FaceQualityConfig(
+    min_side=72,
+    min_eye_distance=24.0,
+    min_brightness=30.0,
+    max_brightness=235.0,
+    min_blur=15.0,
+    min_margin=1,
+    max_nose_shift=0.32,
+    min_mouth_width=0.28,
+    min_face_height=0.62,
+    max_face_height=2.50,
+)
+
+
+def assess_face_quality(
+    frame_bgr: np.ndarray,
+    detection: FaceDetection,
+    config: FaceQualityConfig | None = None,
+) -> FaceQuality:
+    config = config or FaceQualityConfig()
     h, w = frame_bgr.shape[:2]
     x1, y1, x2, y2 = detection.bbox
     face_w = max(0, x2 - x1)
     face_h = max(0, y2 - y1)
     min_side = min(face_w, face_h)
-    if min_side < 96:
+    if min_side < config.min_side:
         return FaceQuality(False, 0.0, "Rostro muy chico; acercate un poco.")
 
     left_eye, right_eye = eye_centers(detection.landmarks)
     eye_distance = float(np.linalg.norm(right_eye - left_eye))
-    if eye_distance < 34:
+    if eye_distance < config.min_eye_distance:
         return FaceQuality(False, 0.0, "Ojos muy juntos en pixeles; falta resolucion.")
 
     if len(detection.landmarks) > CHIN:
-        pose_ok, pose_reason, pose_score = _assess_frontal_pose(detection, left_eye, right_eye, eye_distance)
+        pose_ok, pose_reason, pose_score = _assess_frontal_pose(
+            detection,
+            left_eye,
+            right_eye,
+            eye_distance,
+            config,
+        )
         if not pose_ok:
             return FaceQuality(False, 0.0, pose_reason)
     else:
@@ -47,21 +89,21 @@ def assess_face_quality(frame_bgr: np.ndarray, detection: FaceDetection) -> Face
 
     gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
     brightness = float(np.mean(gray))
-    if brightness < 45:
+    if brightness < config.min_brightness:
         return FaceQuality(False, 0.0, "Imagen oscura; mejora la luz frontal.")
-    if brightness > 220:
+    if brightness > config.max_brightness:
         return FaceQuality(False, 0.0, "Imagen sobreexpuesta; baja la luz.")
 
     blur = float(cv2.Laplacian(gray, cv2.CV_64F).var())
-    if blur < 45:
+    if blur < config.min_blur:
         return FaceQuality(False, 0.0, "Imagen borrosa; mantenete quieto.")
 
     margin = min(x1, y1, w - x2, h - y2)
-    if margin < 4:
+    if margin < config.min_margin:
         return FaceQuality(False, 0.0, "Rostro cortado por el borde.")
 
-    size_score = np.clip((min_side - 96) / 180, 0.0, 1.0)
-    blur_score = np.clip((blur - 45) / 180, 0.0, 1.0)
+    size_score = np.clip((min_side - config.min_side) / 180, 0.0, 1.0)
+    blur_score = np.clip((blur - config.min_blur) / 180, 0.0, 1.0)
     light_score = 1.0 - np.clip(abs(brightness - 128) / 128, 0.0, 1.0)
     score = float(0.35 * size_score + 0.25 * blur_score + 0.20 * light_score + 0.20 * pose_score)
     return FaceQuality(True, score, "")
@@ -72,6 +114,7 @@ def _assess_frontal_pose(
     left_eye: np.ndarray,
     right_eye: np.ndarray,
     eye_distance: float,
+    config: FaceQualityConfig,
 ) -> tuple[bool, str, float]:
     landmarks = detection.landmarks
     nose = landmarks[NOSE_TIP, :2]
@@ -83,17 +126,21 @@ def _assess_frontal_pose(
     eye_axis_unit = eye_axis / max(float(np.linalg.norm(eye_axis)), 1e-6)
     eye_center = (left_eye + right_eye) * 0.5
     nose_shift = float(np.dot(nose - eye_center, eye_axis_unit) / max(eye_distance, 1e-6))
-    if abs(nose_shift) > 0.22:
+    if abs(nose_shift) > config.max_nose_shift:
         return False, "Rostro muy girado; mira mas de frente.", 0.0
 
     mouth_width = float(np.linalg.norm(right_mouth - left_mouth) / max(eye_distance, 1e-6))
-    if mouth_width < 0.35:
+    if mouth_width < config.min_mouth_width:
         return False, "Boca poco visible; evita perfil extremo.", 0.0
 
     face_height = float(np.linalg.norm(chin - eye_center) / max(eye_distance, 1e-6))
-    if face_height < 0.75 or face_height > 2.25:
+    if face_height < config.min_face_height or face_height > config.max_face_height:
         return False, "Angulo vertical poco confiable; centra mejor la cara.", 0.0
 
-    nose_score = 1.0 - np.clip(abs(nose_shift) / 0.22, 0.0, 1.0)
-    mouth_score = np.clip((mouth_width - 0.35) / 0.35, 0.0, 1.0)
+    nose_score = 1.0 - np.clip(abs(nose_shift) / config.max_nose_shift, 0.0, 1.0)
+    mouth_score = np.clip(
+        (mouth_width - config.min_mouth_width) / max(config.min_mouth_width, 1e-6),
+        0.0,
+        1.0,
+    )
     return True, "", float(0.7 * nose_score + 0.3 * mouth_score)

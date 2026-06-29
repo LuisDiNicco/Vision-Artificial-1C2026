@@ -62,6 +62,12 @@ def build_main_window(dpg, owner, video_w: int, video_h: int, video_texture_tag:
                             width=78,
                         )
                         dpg.add_text("00:00 / 00:00", tag="video_playback_time")
+                        dpg.add_checkbox(
+                            label="Mostrar landmarks",
+                            tag="video_show_landmarks",
+                            default_value=True,
+                            callback=owner._on_video_landmarks_changed,
+                        )
 
 
 def build_support_windows(dpg, owner) -> None:

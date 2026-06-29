@@ -21,7 +21,7 @@ def add_video_analysis_tab(dpg, owner) -> None:
                     color=(190, 200, 210),
                 )
             with dpg.tab(label="Ajustes"):
-                dpg.add_text("Muestreo entre inferencias (seg, 0.33 recomendado)")
+                dpg.add_text("Muestreo en vivo (el preprocesado analiza todos los frames)")
                 dpg.add_slider_float(
                     label="",
                     tag="video_sample_seconds",

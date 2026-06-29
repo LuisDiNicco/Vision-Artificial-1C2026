@@ -19,7 +19,7 @@ from ..backend.clasificador import Prediction, save_classifier, train_classifier
 from ..backend.data import MODEL_PATH, count_embeddings_for_person, load_embeddings, save_sample
 from ..backend.deteccion import MediaPipeFaceDetector, largest_face
 from ..backend.embeddings import ArcFaceEmbedder
-from ..backend.face_quality import assess_face_quality
+from ..backend.face_quality import VIDEO_FACE_QUALITY, assess_face_quality
 from ..backend.video_analysis_cache import (
     analysis_at_time,
     analysis_cache_path,
@@ -50,6 +50,7 @@ VIDEO_UNCERTAIN_GRACE_SAMPLES = 2
 VIDEO_MISSING_FACE_GRACE_FRAMES = 10
 VIDEO_FACE_CONTINUITY_MIN_IOU = 0.18
 VIDEO_DETECTION_PERIOD_SECONDS = 0.10
+VIDEO_PREPROCESS_MAX_FACES = 12
 
 
 def parse_args() -> argparse.Namespace:
@@ -520,7 +521,11 @@ class FaceRecognitionGui:
         try:
             if self.embedder is None:
                 self.embedder = ArcFaceEmbedder()
-            detector = MediaPipeFaceDetector(max_faces=4, min_detection_confidence=0.70, min_tracking_confidence=0.70)
+            detector = MediaPipeFaceDetector(
+                max_faces=VIDEO_PREPROCESS_MAX_FACES,
+                min_detection_confidence=0.70,
+                min_tracking_confidence=0.70,
+            )
             cap = cv2.VideoCapture(str(video_path))
             if not cap.isOpened():
                 raise RuntimeError("No se pudo abrir el video para preprocesarlo.")
@@ -532,9 +537,10 @@ class FaceRecognitionGui:
             width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
             height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
             duration = total_frames / fps
-            step_frames = max(1, int(round(fps * VIDEO_DETECTION_PERIOD_SECONDS)))
-            targets = range(0, total_frames, step_frames)
-            sample_count = max(1, (total_frames + step_frames - 1) // step_frames)
+            # El preprocesamiento asincronico prioriza precision: analiza cada
+            # frame. El muestreo configurado se conserva para el modo en vivo.
+            targets = range(total_frames)
+            sample_count = total_frames
 
             self.video_playback_min_similarity = min_similarity
             self.video_playback_recognition_period = sample_seconds
@@ -557,7 +563,12 @@ class FaceRecognitionGui:
                 seconds = target_frame / fps
                 self.video_playback_current_seconds = seconds
                 detections = detector.detect(frame)
-                predictions = self._get_celebrity_video_predictions(frame, detections, seconds)
+                predictions = self._get_celebrity_video_predictions(
+                    frame,
+                    detections,
+                    seconds,
+                    force_recognition=True,
+                )
                 records.append(make_analysis_record(seconds, detections, predictions))
 
                 progress = min(1.0, (sample_index + 1) / sample_count)
@@ -822,6 +833,11 @@ class FaceRecognitionGui:
                 f"{format_video_time(seconds)} / {format_video_time(self.video_playback_duration)}",
             )
 
+    def _on_video_landmarks_changed(self, *args) -> None:
+        with self.video_playback_lock:
+            if self.video_playback_cap is not None:
+                self.video_playback_seek_pending = True
+
     def _render_actor_video_frame(self) -> None:
         with self.video_playback_lock:
             if self.video_playback_cap is None:
@@ -873,7 +889,17 @@ class FaceRecognitionGui:
         else:
             detections = self._get_video_detections(frame, current_seconds)
             predictions = self._get_celebrity_video_predictions(frame, detections, current_seconds)
-        draw_face_annotations(frame, detections, predictions)
+        show_landmarks = (
+            bool(self.dpg.get_value("video_show_landmarks"))
+            if self.dpg.does_item_exist("video_show_landmarks")
+            else True
+        )
+        draw_face_annotations(
+            frame,
+            detections,
+            predictions,
+            show_landmarks=show_landmarks,
+        )
         self._update_video_texture(frame)
         self._update_actor_video_stats(len(detections), predictions)
 
@@ -884,7 +910,13 @@ class FaceRecognitionGui:
         self.video_playback_last_detections = self.detector.detect(frame)
         return self.video_playback_last_detections
 
-    def _get_celebrity_video_predictions(self, frame, detections, current_seconds: float | None = None):
+    def _get_celebrity_video_predictions(
+        self,
+        frame,
+        detections,
+        current_seconds: float | None = None,
+        force_recognition: bool = False,
+    ):
         with self.video_recognition_lock:
             current_seconds = self.video_playback_current_seconds if current_seconds is None else current_seconds
             if not detections:
@@ -908,7 +940,9 @@ class FaceRecognitionGui:
                 self.video_last_face_bbox = None
 
             if (
-                current_seconds - self.video_playback_last_recognition_seconds < self.video_playback_recognition_period
+                not force_recognition
+                and current_seconds - self.video_playback_last_recognition_seconds
+                < self.video_playback_recognition_period
                 and len(self.video_playback_last_predictions) == len(detections)
             ):
                 return self.video_playback_last_predictions
@@ -917,7 +951,7 @@ class FaceRecognitionGui:
             index = self._load_celebrity_index()
             predictions = []
             for detection in detections:
-                quality = assess_face_quality(frame, detection)
+                quality = assess_face_quality(frame, detection, VIDEO_FACE_QUALITY)
                 if not quality.ok:
                     if len(detections) == 1:
                         self.video_recent_embeddings.clear()

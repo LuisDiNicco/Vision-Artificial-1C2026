@@ -33,6 +33,7 @@ def draw_face_annotations(
     frame: np.ndarray,
     detections: Iterable[FaceDetection],
     predictions: Optional[Iterable[Prediction]] = None,
+    show_landmarks: bool = True,
 ) -> None:
     predictions = list(predictions) if predictions is not None else []
     for idx, detection in enumerate(detections):
@@ -42,9 +43,14 @@ def draw_face_annotations(
         cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2, cv2.LINE_AA)
         cv2.rectangle(frame, (x1, y1), (x2, min(y2, y1 + 4)), color, -1)
 
-        landmark_points = detection.landmarks if detection.landmarks_are_sampled else detection.landmarks[::LANDMARK_DRAW_STEP]
-        for point in landmark_points:
-            cv2.circle(frame, (int(point[0]), int(point[1])), 2, (0, 255, 180), -1, cv2.LINE_AA)
+        if show_landmarks:
+            landmark_points = (
+                detection.landmarks
+                if detection.landmarks_are_sampled
+                else detection.landmarks[::LANDMARK_DRAW_STEP]
+            )
+            for point in landmark_points:
+                cv2.circle(frame, (int(point[0]), int(point[1])), 2, (0, 255, 180), -1, cv2.LINE_AA)
 
         if prediction:
             text = f"{prediction.label} {prediction.confidence * 100:.1f}%"

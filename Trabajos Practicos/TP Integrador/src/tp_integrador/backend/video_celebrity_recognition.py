@@ -9,7 +9,7 @@ import numpy as np
 
 from .celebrity import CelebrityIndex, CelebrityMatch
 from .deteccion import FaceDetection, MediaPipeFaceDetector
-from .face_quality import assess_face_quality
+from .face_quality import VIDEO_FACE_QUALITY, assess_face_quality
 
 
 ProgressCallback = Callable[[str], None]
@@ -170,7 +170,7 @@ def _observation_from_detection(
     face_side = min(x2 - x1, y2 - y1)
     if face_side < config.min_face_side:
         return None
-    quality = assess_face_quality(frame, detection)
+    quality = assess_face_quality(frame, detection, VIDEO_FACE_QUALITY)
     if not quality.ok or quality.score < config.min_quality_score:
         return None
     embedding, aligned = embedder.embed_face(frame, detection)
