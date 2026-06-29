@@ -25,11 +25,11 @@ from ..backend.data import MODEL_PATH, count_embeddings_for_person, load_embeddi
 from ..backend.deteccion import MediaPipeFaceDetector, largest_face
 from ..backend.embeddings import ArcFaceEmbedder
 from ..backend.face_quality import VIDEO_FACE_QUALITY, assess_face_quality
+from ..backend.offline_video_analysis import analyze_video_offline
 from ..backend.video_analysis_cache import (
     analysis_at_time,
     analysis_cache_path,
     load_video_analysis,
-    make_analysis_record,
     prepare_analysis_timeline,
     save_video_analysis,
 )
@@ -55,7 +55,6 @@ VIDEO_UNCERTAIN_GRACE_SAMPLES = 2
 VIDEO_MISSING_FACE_GRACE_FRAMES = 10
 VIDEO_FACE_CONTINUITY_MIN_IOU = 0.18
 VIDEO_DETECTION_PERIOD_SECONDS = 0.10
-VIDEO_PREPROCESS_MAX_FACES = 12
 
 
 def parse_args() -> argparse.Namespace:
@@ -520,80 +519,44 @@ class FaceRecognitionGui:
         sample_seconds: float,
         min_similarity: float,
     ) -> None:
-        cap = None
-        detector = None
         started_at = time.monotonic()
         try:
             if self.embedder is None:
                 self.embedder = ArcFaceEmbedder()
-            detector = MediaPipeFaceDetector(
-                max_faces=VIDEO_PREPROCESS_MAX_FACES,
-                min_detection_confidence=0.70,
-                min_tracking_confidence=0.70,
-            )
-            cap = cv2.VideoCapture(str(video_path))
-            if not cap.isOpened():
-                raise RuntimeError("No se pudo abrir el video para preprocesarlo.")
+            index = self._load_celebrity_index()
+            if index is None:
+                raise RuntimeError("No esta disponible el cache de famosos.")
 
-            fps = max(float(cap.get(cv2.CAP_PROP_FPS) or 25.0), 1.0)
-            total_frames = max(int(cap.get(cv2.CAP_PROP_FRAME_COUNT)), 0)
-            if total_frames <= 0:
-                raise RuntimeError("El video no informa una cantidad valida de frames.")
-            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-            duration = total_frames / fps
-            # El preprocesamiento asincronico prioriza precision: analiza cada
-            # frame. El muestreo configurado se conserva para el modo en vivo.
-            targets = range(total_frames)
-            sample_count = total_frames
-
-            self.video_playback_min_similarity = min_similarity
-            self.video_playback_recognition_period = sample_seconds
-            self.video_playback_last_recognition_seconds = float("-inf")
-            self.video_playback_last_predictions = []
-            self._reset_video_recognition_history()
-            records = []
-
-            for sample_index, target_frame in enumerate(targets):
-                if self.video_preprocess_cancel.is_set():
-                    raise RuntimeError("Analisis cancelado.")
-                decoder_frame = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
-                for _ in range(max(0, target_frame - decoder_frame)):
-                    if not cap.grab():
-                        break
-                ok, frame = cap.read()
-                if not ok:
-                    break
-
-                seconds = target_frame / fps
-                self.video_playback_current_seconds = seconds
-                detections = detector.detect(frame)
-                predictions = self._get_celebrity_video_predictions(
-                    frame,
-                    detections,
-                    seconds,
-                    force_recognition=True,
-                )
-                records.append(make_analysis_record(seconds, detections, predictions))
-
-                progress = min(1.0, (sample_index + 1) / sample_count)
+            def update_progress(progress: float, message: str) -> None:
                 elapsed = time.monotonic() - started_at
                 remaining = elapsed * (1.0 - progress) / progress if progress > 0 else 0.0
-                overlay = f"{progress * 100:.0f}% | restante aprox. {format_video_time(remaining)}"
+                overlay = (
+                    f"{progress * 100:.0f}% | {message} | "
+                    f"restante aprox. {format_video_time(remaining)}"
+                )
                 with self.video_preprocess_lock:
                     self.video_preprocess_progress = progress
                     self.video_preprocess_overlay = overlay
 
+            analysis = analyze_video_offline(
+                video_path,
+                self.embedder,
+                index,
+                min_similarity=min_similarity,
+                cancel_event=self.video_preprocess_cancel,
+                progress_callback=update_progress,
+            )
             save_video_analysis(
                 cache_path,
                 video_path,
-                duration,
-                fps,
-                width,
-                height,
+                analysis.duration,
+                analysis.fps,
+                analysis.width,
+                analysis.height,
                 sample_seconds,
                 min_similarity,
-                records,
+                analysis.records,
+                analysis_metadata=analysis.metadata,
             )
             result = cache_path
             error = None
@@ -601,10 +564,6 @@ class FaceRecognitionGui:
             result = None
             error = str(exc)
         finally:
-            if cap is not None:
-                cap.release()
-            if detector is not None:
-                detector.close()
             self._reset_video_recognition_history()
             with self.video_preprocess_lock:
                 self.video_preprocess_active = False
@@ -920,7 +879,6 @@ class FaceRecognitionGui:
         frame,
         detections,
         current_seconds: float | None = None,
-        force_recognition: bool = False,
     ):
         with self.video_recognition_lock:
             current_seconds = self.video_playback_current_seconds if current_seconds is None else current_seconds
@@ -945,8 +903,7 @@ class FaceRecognitionGui:
                 self.video_last_face_bbox = None
 
             if (
-                not force_recognition
-                and current_seconds - self.video_playback_last_recognition_seconds
+                current_seconds - self.video_playback_last_recognition_seconds
                 < self.video_playback_recognition_period
                 and len(self.video_playback_last_predictions) == len(detections)
             ):

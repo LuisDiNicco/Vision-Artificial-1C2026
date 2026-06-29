@@ -13,7 +13,7 @@ HELP_TOPICS = {
     ),
     "videos": (
         "Analisis de videos",
-        "Elegi un archivo local o pega una URL de YouTube. El sistema muestrea frames, descarta caras de baja calidad, agrupa apariciones y compara embeddings promedio contra famosos.",
+        "Elegi un archivo local o pega una URL de YouTube. El preprocesamiento analiza todos los frames en dos escalas, sigue cada rostro, pondera la calidad, elimina outliers y consolida la identidad antes de guardar el resultado.",
     ),
     "source": (
         "Fuente en vivo",

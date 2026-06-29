@@ -16,7 +16,7 @@ from .video_inputs import VIDEO_DOWNLOAD_DIR
 
 
 ANALYSIS_CACHE_DIR = VIDEO_DOWNLOAD_DIR / "analysis"
-ANALYSIS_CACHE_VERSION = 6
+ANALYSIS_CACHE_VERSION = 7
 LANDMARK_CACHE_STEP = 1
 
 
@@ -50,6 +50,7 @@ def save_video_analysis(
     sample_seconds: float,
     min_similarity: float,
     records: Iterable[dict],
+    analysis_metadata: dict | None = None,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
@@ -61,6 +62,7 @@ def save_video_analysis(
         "height": int(height),
         "sample_seconds": float(sample_seconds),
         "min_similarity": float(min_similarity),
+        "analysis_metadata": analysis_metadata or {},
         "records": list(records),
     }
     temp_path = path.with_suffix(".tmp")
