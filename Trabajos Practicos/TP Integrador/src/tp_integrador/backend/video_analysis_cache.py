@@ -10,13 +10,13 @@ from typing import Iterable
 import numpy as np
 
 from .clasificador import Prediction
-from .celebrity import CELEBRITY_INDEX_PATH
+from .celebrity import CELEBRITY_INDEX_PATH, CELEBRITY_MIN_MARGIN
 from .deteccion import FaceDetection
 from .video_inputs import VIDEO_DOWNLOAD_DIR
 
 
 ANALYSIS_CACHE_DIR = VIDEO_DOWNLOAD_DIR / "analysis"
-ANALYSIS_CACHE_VERSION = 5
+ANALYSIS_CACHE_VERSION = 6
 LANDMARK_CACHE_STEP = 1
 
 
@@ -30,6 +30,7 @@ def analysis_cache_path(video_path: Path, sample_seconds: float, min_similarity:
         "mtime_ns": stat.st_mtime_ns,
         "sample_seconds": round(float(sample_seconds), 4),
         "min_similarity": round(float(min_similarity), 4),
+        "min_similarity_margin": CELEBRITY_MIN_MARGIN,
     }
     if CELEBRITY_INDEX_PATH.exists():
         celebrity_stat = CELEBRITY_INDEX_PATH.stat()

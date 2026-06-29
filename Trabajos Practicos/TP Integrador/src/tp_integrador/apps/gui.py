@@ -14,7 +14,12 @@ import cv2
 import numpy as np
 
 from ..backend.camera import open_webcam
-from ..backend.celebrity import CelebrityIndex, load_or_build_celebrity_cache
+from ..backend.celebrity import (
+    CELEBRITY_MIN_MARGIN,
+    CelebrityIndex,
+    celebrity_match_rejection_reason,
+    load_or_build_celebrity_cache,
+)
 from ..backend.clasificador import Prediction, save_classifier, train_classifier, try_load_classifier
 from ..backend.data import MODEL_PATH, count_embeddings_for_person, load_embeddings, save_sample
 from ..backend.deteccion import MediaPipeFaceDetector, largest_face
@@ -967,10 +972,15 @@ class FaceRecognitionGui:
                     self.video_recent_embeddings.append(embedding)
                     embedding = average_embeddings(self.video_recent_embeddings)
 
-                matches = index.top_unique(embedding, limit=1) if index is not None else []
-                if not matches or matches[0].similarity < self.video_playback_min_similarity:
+                matches = index.top_unique(embedding, limit=2) if index is not None else []
+                rejection_reason = celebrity_match_rejection_reason(
+                    matches,
+                    self.video_playback_min_similarity,
+                    CELEBRITY_MIN_MARGIN,
+                )
+                if rejection_reason is not None:
                     if len(detections) == 1:
-                        uncertain = self._video_uncertain_prediction("umbral")
+                        uncertain = self._video_uncertain_prediction(rejection_reason)
                         if uncertain.label != "desconocido":
                             self.video_playback_last_predictions = [uncertain]
                             return [uncertain]

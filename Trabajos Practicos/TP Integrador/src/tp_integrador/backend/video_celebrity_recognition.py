@@ -7,7 +7,12 @@ from typing import Callable, Iterable, List, Optional
 import cv2
 import numpy as np
 
-from .celebrity import CelebrityIndex, CelebrityMatch
+from .celebrity import (
+    CELEBRITY_MIN_MARGIN,
+    CelebrityIndex,
+    CelebrityMatch,
+    celebrity_match_rejection_reason,
+)
 from .deteccion import FaceDetection, MediaPipeFaceDetector
 from .face_quality import VIDEO_FACE_QUALITY, assess_face_quality
 
@@ -23,6 +28,7 @@ class VideoCelebrityConfig:
     min_face_side: int = 112
     min_track_samples: int = 3
     min_similarity: float = 0.34
+    min_similarity_margin: float = CELEBRITY_MIN_MARGIN
     max_faces_per_frame: int = 6
 
 
@@ -217,7 +223,11 @@ def _results_from_tracks(
         if not matches:
             continue
         best = matches[0]
-        if best.similarity < config.min_similarity:
+        if celebrity_match_rejection_reason(
+            matches,
+            config.min_similarity,
+            config.min_similarity_margin,
+        ) is not None:
             continue
         best_observation = max(track.observations, key=lambda item: (item.quality_score, item.face_side))
         confidence = _confidence(best.similarity, len(track.observations), config)
