@@ -236,7 +236,7 @@ class FaceRecognitionGui:
             return
 
         if self.cap is None or not self.cap.isOpened():
-            self._set_status("No hay fuente de video abierta.")
+            self._update_idle_status()
             return
 
         ok, frame = self.cap.read()
@@ -269,6 +269,15 @@ class FaceRecognitionGui:
 
         self._update_video_texture(frame)
         self._update_status_text(len(detections), predictions)
+
+    def _update_idle_status(self) -> None:
+        if self.video_controls_visible and self.video_file_path:
+            if self.video_preprocess_active:
+                self._set_status("Preprocesando video. La reproduccion quedara disponible al finalizar.")
+            else:
+                self._set_status("Video listo para reproducir. Usa 'Reproducir y reconocer'.")
+            return
+        self._set_status("No hay fuente de video abierta.")
 
     def _capture_sample(self, frame, face) -> None:
         name = self.dpg.get_value("person_name").strip()
