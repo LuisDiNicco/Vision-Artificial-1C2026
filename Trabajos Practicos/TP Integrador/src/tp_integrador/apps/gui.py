@@ -29,6 +29,7 @@ from ..backend.offline_video_analysis import analyze_video_offline
 from ..backend.video_analysis_cache import (
     analysis_at_time,
     analysis_cache_path,
+    analysis_record_at_time,
     load_video_analysis,
     prepare_analysis_timeline,
     save_video_analysis,
@@ -834,8 +835,14 @@ class FaceRecognitionGui:
 
         self.dpg.set_value("video_seek_slider", current_seconds)
         self._update_playback_time(current_seconds)
+        offline_record = None
         if self.video_playback_uses_cache:
             detections, predictions = analysis_at_time(
+                self.video_cached_times,
+                self.video_cached_records,
+                current_seconds,
+            )
+            offline_record = analysis_record_at_time(
                 self.video_cached_times,
                 self.video_cached_records,
                 current_seconds,
@@ -855,7 +862,7 @@ class FaceRecognitionGui:
             show_landmarks=show_landmarks,
         )
         self._update_video_texture(frame)
-        self._update_actor_video_stats(len(detections), predictions)
+        self._update_actor_video_stats(len(detections), predictions, offline_record)
 
     def _get_video_detections(self, frame, current_seconds: float):
         if current_seconds - self.video_playback_last_detection_seconds < VIDEO_DETECTION_PERIOD_SECONDS:
@@ -1032,7 +1039,7 @@ class FaceRecognitionGui:
             f"Modo: {self.mode} | Fuente: Camara {self.camera_index} | Rostros: {face_count}{prediction_text}",
         )
 
-    def _update_actor_video_stats(self, face_count: int, predictions) -> None:
+    def _update_actor_video_stats(self, face_count: int, predictions, offline_record=None) -> None:
         if not self.dpg.does_item_exist("stats_text"):
             return
         prediction_text = ""
@@ -1049,7 +1056,10 @@ class FaceRecognitionGui:
             f"Modo: video | Fuente: {path} | Rostros: {face_count}{prediction_text}",
         )
         if self.dpg.does_item_exist("video_results_text"):
-            if not predictions:
+            if offline_record is not None:
+                text = format_offline_results(offline_record)
+                self.dpg.set_value("video_results_text", text)
+            elif not predictions:
                 self.dpg.set_value("video_results_text", "Sin rostros detectados en este frame.")
             else:
                 lines = [
@@ -1192,6 +1202,51 @@ def format_video_time(seconds: float) -> str:
     if hours:
         return f"{hours:d}:{minutes:02d}:{secs:02d}"
     return f"{minutes:02d}:{secs:02d}"
+
+
+def format_offline_results(record: dict) -> str:
+    faces = list(record.get("faces", []))
+    second = float(record.get("seconds", 0.0))
+    if not faces:
+        return f"{format_video_time(second)} | Sin rostros detectados."
+
+    sections = [f"{format_video_time(second)} | Rostros detectados: {len(faces)}"]
+    for index, face in enumerate(faces, start=1):
+        quality = face.get("quality", {})
+        label = str(face.get("label", "desconocido"))
+        confidence = float(face.get("confidence", 0.0)) * 100.0
+        usable = "usable" if quality.get("usable", False) else "descartada"
+        synthetic = " | interpolado" if face.get("synthetic", False) else ""
+        lines = [
+            f"Rostro {index} | {label} | confianza {confidence:.1f}%",
+            (
+                f"Calidad: {float(quality.get('weight', 0.0)) * 100.0:.1f}% ({usable})"
+                f" | motivo: {quality.get('reason', 'sin_dato')}{synthetic}"
+            ),
+            (
+                f"Blur: {float(quality.get('blur', 0.0)):.1f}"
+                f" | brillo: {float(quality.get('brightness', 0.0)):.1f}"
+                f" | lado: {int(quality.get('side', 0))} px"
+            ),
+            (
+                f"Ojos: {float(quality.get('eye_distance', 0.0)):.1f} px"
+                f" | desvio nariz: {float(quality.get('nose_shift', 0.0)):.3f}"
+                f" | deteccion: {float(face.get('detection_confidence', 0.0)) * 100.0:.1f}%"
+            ),
+        ]
+
+        matches = list(face.get("raw_matches", []))[:3]
+        if matches:
+            lines.append("Top 3 por similitud coseno:")
+            lines.extend(
+                f"  {rank}. {match.get('name', 'desconocido')}: {float(match.get('similarity', 0.0)) * 100.0:.1f}%"
+                for rank, match in enumerate(matches, start=1)
+            )
+        else:
+            lines.append("Top 3 candidatos: sin coincidencias")
+
+        sections.append("\n".join(lines))
+    return "\n\n".join(sections)
 
 
 def select_video_texture_size(display_w: int, display_h: int) -> tuple[int, int]:

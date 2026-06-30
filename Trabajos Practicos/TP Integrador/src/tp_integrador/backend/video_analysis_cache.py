@@ -96,6 +96,21 @@ def prepare_analysis_timeline(payload: dict) -> tuple[list[float], list[dict]]:
     return [float(record["seconds"]) for record in records], records
 
 
+def analysis_record_at_time(times: list[float], records: list[dict], seconds: float) -> dict | None:
+    """Devuelve el registro offline mas cercano para mostrar su evidencia sin interpolarla."""
+    if not records:
+        return None
+    next_index = bisect.bisect_left(times, seconds)
+    if next_index <= 0:
+        return records[0]
+    if next_index >= len(records):
+        return records[-1]
+    previous_index = next_index - 1
+    if seconds - times[previous_index] <= times[next_index] - seconds:
+        return records[previous_index]
+    return records[next_index]
+
+
 def analysis_at_time(times: list[float], records: list[dict], seconds: float):
     if not records:
         return [], []
