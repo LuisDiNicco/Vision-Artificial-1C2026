@@ -1,7 +1,9 @@
 import argparse
 from collections import deque
 from pathlib import Path
+import shutil
 import sys
+import tempfile
 import threading
 import time
 
@@ -57,6 +59,8 @@ VIDEO_UNCERTAIN_GRACE_SAMPLES = 2
 VIDEO_MISSING_FACE_GRACE_FRAMES = 10
 VIDEO_FACE_CONTINUITY_MIN_IOU = 0.18
 VIDEO_DETECTION_PERIOD_SECONDS = 0.10
+ICON_PLAY = "\uf04b"
+ICON_PAUSE = "\uf04c"
 
 
 def parse_args() -> argparse.Namespace:
@@ -101,6 +105,7 @@ class FaceRecognitionGui:
         self.video_playback_last_detection_seconds = float("-inf")
         self.video_playback_min_similarity = 0.34
         self.video_playback_paused = False
+        self.video_playback_speed = 1.0
         self.video_playback_seek_pending = False
         self.video_playback_fps = 25.0
         self.video_playback_duration = 0.0
@@ -143,6 +148,7 @@ class FaceRecognitionGui:
         self.video_preprocess_finished_pending = False
         self.video_preprocess_cancel = threading.Event()
         self.video_preprocess_thread = None
+        self.playback_icon_font = None
 
         self.cap = None
         self.detector = MediaPipeFaceDetector(max_faces=4, min_detection_confidence=0.70, min_tracking_confidence=0.70)
@@ -172,6 +178,7 @@ class FaceRecognitionGui:
 
         build_main_window(dpg, self, VIDEO_W, VIDEO_H, self.video_texture_tag)
         build_support_windows(dpg, self)
+        self._bind_playback_icon_font()
 
         self._apply_theme()
         self._populate_camera_options()
@@ -197,7 +204,36 @@ class FaceRecognitionGui:
             return
         with self.dpg.font_registry():
             default_font = self.dpg.add_font(str(font_path), 18)
+            icon_path = Path(__file__).resolve().parents[3] / "assets" / "fonts" / "Font Awesome 6 Free-Solid-900.otf"
+            if icon_path.exists():
+                try:
+                    # Dear PyGui no abre fuentes desde rutas Unicode en Windows.
+                    # La copia temporal evita caracteres como el "º" de la ruta del proyecto.
+                    load_path = icon_path
+                    if sys.platform == "win32" and not str(icon_path).isascii():
+                        load_path = Path(tempfile.gettempdir()) / "tp_integrador_fontawesome.otf"
+                        if not load_path.exists() or load_path.stat().st_size != icon_path.stat().st_size:
+                            shutil.copy2(icon_path, load_path)
+                    self.playback_icon_font = self.dpg.add_font(str(load_path), 18)
+                except (OSError, RuntimeError, SystemError):
+                    self.playback_icon_font = None
         self.dpg.bind_font(default_font)
+
+    def _playback_icon(self, icon: str, fallback: str) -> str:
+        return icon if self.playback_icon_font is not None else fallback
+
+    def _bind_playback_icon_font(self) -> None:
+        if self.playback_icon_font is None:
+            return
+        for item in (
+            "video_replay_button",
+            "video_skip_back_button",
+            "video_prev_frame_button",
+            "video_play_pause_button",
+            "video_next_frame_button",
+            "video_skip_forward_button",
+        ):
+            self.dpg.bind_item_font(item, self.playback_icon_font)
 
     def _apply_theme(self) -> None:
         dpg = self.dpg
@@ -658,6 +694,7 @@ class FaceRecognitionGui:
             frame_count = max(float(next_cap.get(cv2.CAP_PROP_FRAME_COUNT)), 0.0)
             self.video_playback_duration = frame_count / self.video_playback_fps if frame_count else 0.0
             self.video_playback_paused = False
+            self.video_playback_speed = 1.0
             self.video_playback_seek_pending = False
             self.video_playback_clock_base = 0.0
             self.video_playback_clock_started_at = time.monotonic()
@@ -722,7 +759,7 @@ class FaceRecognitionGui:
             paused = self.video_playback_paused
         self.dpg.configure_item(
             "video_play_pause_button",
-            label=">" if paused else "||",
+            label=self._playback_icon(ICON_PLAY if paused else ICON_PAUSE, ">" if paused else "||"),
         )
         state = "en pausa" if paused else "reanudado"
         self._set_status(f"Video {state}.")
@@ -737,6 +774,30 @@ class FaceRecognitionGui:
                 return
             current_seconds = self._playback_position_locked()
         self._seek_actor_video_to(current_seconds + offset_seconds)
+
+    def _replay_actor_video(self, *args) -> None:
+        self._seek_actor_video_to(0.0)
+
+    def _step_actor_video_frame(self, sender, app_data, user_data=None) -> None:
+        direction = 1 if int(user_data or 1) > 0 else -1
+        with self.video_playback_lock:
+            if self.video_playback_cap is None:
+                return
+            target_frame = max(0, self.video_playback_displayed_frame + direction)
+            self.video_playback_paused = True
+        self._seek_actor_video_to(target_frame / self.video_playback_fps)
+        self.dpg.configure_item("video_play_pause_button", label=self._playback_icon(ICON_PLAY, ">"))
+
+    def _change_actor_video_speed(self, sender, app_data, user_data=None) -> None:
+        speed = float(str(app_data).rstrip("x"))
+        with self.video_playback_lock:
+            if self.video_playback_cap is None:
+                return
+            now = time.monotonic()
+            self.video_playback_clock_base = self._playback_position_locked(now)
+            self.video_playback_clock_started_at = now
+            self.video_playback_speed = speed
+        self._set_status(f"Velocidad de reproduccion: {speed:g}x.")
 
     def _seek_actor_video_to(self, requested_seconds: float) -> None:
         with self.video_playback_lock:
@@ -762,7 +823,9 @@ class FaceRecognitionGui:
             position = self.video_playback_clock_base
         else:
             now = time.monotonic() if now is None else now
-            position = self.video_playback_clock_base + max(0.0, now - self.video_playback_clock_started_at)
+            position = self.video_playback_clock_base + (
+                max(0.0, now - self.video_playback_clock_started_at) * self.video_playback_speed
+            )
         if self.video_playback_duration:
             position = min(position, self.video_playback_duration)
         return max(0.0, position)
@@ -770,9 +833,19 @@ class FaceRecognitionGui:
     def _configure_playback_controls(self, active: bool) -> None:
         if not self.dpg.does_item_exist("video_play_pause_button"):
             return
-        self.dpg.configure_item("video_play_pause_button", enabled=active, label="||" if active else ">")
+        self.dpg.configure_item(
+            "video_play_pause_button",
+            enabled=active,
+            label=self._playback_icon(ICON_PAUSE if active else ICON_PLAY, "||" if active else ">"),
+        )
         self.dpg.configure_item("video_skip_back_button", enabled=active)
         self.dpg.configure_item("video_skip_forward_button", enabled=active)
+        self.dpg.configure_item("video_replay_button", enabled=active)
+        self.dpg.configure_item("video_prev_frame_button", enabled=active)
+        self.dpg.configure_item("video_next_frame_button", enabled=active)
+        self.dpg.configure_item("video_speed_combo", enabled=active)
+        if active:
+            self.dpg.set_value("video_speed_combo", "1x")
         self.dpg.configure_item("video_seek_slider", enabled=active)
         self.dpg.configure_item(
             "video_seek_slider",
@@ -802,7 +875,14 @@ class FaceRecognitionGui:
                 return
             current_seconds = self._playback_position_locked()
             if self.video_playback_duration and current_seconds >= self.video_playback_duration:
-                reached_end = True
+                self.video_playback_cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                self.video_playback_clock_base = 0.0
+                self.video_playback_clock_started_at = time.monotonic()
+                self.video_playback_displayed_frame = -1
+                self.video_playback_current_seconds = 0.0
+                self.video_playback_last_recognition_seconds = float("-inf")
+                current_seconds = 0.0
+                reached_end = False
             else:
                 reached_end = False
             target_frame = max(0, int(current_seconds * self.video_playback_fps))
@@ -829,8 +909,8 @@ class FaceRecognitionGui:
                 self.video_playback_current_seconds = current_seconds
             self.video_playback_seek_pending = False
         if not ok:
-            self._stop_actor_video()
-            self._set_status("Fin del video. Vista en vivo restaurada.")
+            self._seek_actor_video_to(0.0)
+            self._set_status("Fin del video. Reiniciando en loop.")
             return
 
         self.dpg.set_value("video_seek_slider", current_seconds)
