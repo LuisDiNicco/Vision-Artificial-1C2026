@@ -32,6 +32,7 @@ from ..backend.video_analysis_cache import (
     load_video_analysis,
     prepare_analysis_timeline,
     save_video_analysis,
+    video_feature_cache_path,
 )
 from ..backend.video_inputs import VIDEO_DOWNLOAD_DIR, download_youtube_video, looks_like_youtube_url
 from ..frontend.gui.help import HELP_TOPICS
@@ -529,23 +530,26 @@ class FaceRecognitionGui:
         min_similarity: float,
     ) -> None:
         started_at = time.monotonic()
+
+        def update_progress(progress: float, message: str) -> None:
+            elapsed = time.monotonic() - started_at
+            remaining = elapsed * (1.0 - progress) / progress if progress > 0 else 0.0
+            overlay = (
+                f"{progress * 100:.0f}% | {message} | "
+                f"restante aprox. {format_video_time(remaining)}"
+            )
+            with self.video_preprocess_lock:
+                self.video_preprocess_progress = progress
+                self.video_preprocess_overlay = overlay
+
         try:
             if self.embedder is None:
+                update_progress(0.005, "Cargando ArcFace...")
                 self.embedder = ArcFaceEmbedder()
+            update_progress(0.01, "Preparando detectores y video...")
             index = self._load_celebrity_index()
             if index is None:
                 raise RuntimeError("No esta disponible el cache de famosos.")
-
-            def update_progress(progress: float, message: str) -> None:
-                elapsed = time.monotonic() - started_at
-                remaining = elapsed * (1.0 - progress) / progress if progress > 0 else 0.0
-                overlay = (
-                    f"{progress * 100:.0f}% | {message} | "
-                    f"restante aprox. {format_video_time(remaining)}"
-                )
-                with self.video_preprocess_lock:
-                    self.video_preprocess_progress = progress
-                    self.video_preprocess_overlay = overlay
 
             analysis = analyze_video_offline(
                 video_path,
@@ -554,6 +558,7 @@ class FaceRecognitionGui:
                 min_similarity=min_similarity,
                 cancel_event=self.video_preprocess_cancel,
                 progress_callback=update_progress,
+                feature_cache_path=video_feature_cache_path(video_path),
             )
             save_video_analysis(
                 cache_path,

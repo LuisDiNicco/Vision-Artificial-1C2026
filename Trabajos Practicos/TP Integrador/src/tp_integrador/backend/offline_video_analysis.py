@@ -43,16 +43,29 @@ class OfflineVideoConfig:
     min_similarity: float = 0.34
     min_similarity_margin: float = CELEBRITY_MIN_MARGIN
     min_temporal_votes: int = 3
-    temporal_vote_ratio: float = 0.60
+    temporal_vote_ratio: float = 0.65
+    strong_track_min_vote_ratio: float = 0.45
+    max_competing_vote_ratio: float = 0.15
+    min_embedding_inlier_ratio: float = 0.68
     sample_support_count: int = 2
     sample_support_slack: float = 0.05
     max_refinement_frames: int = 5
     embedding_batch_size: int = 12
     max_batch_frames: int = 24
-    secondary_strategy: str = "adaptive"
+    secondary_strategy: str = "always"
     secondary_scan_interval: int = 20
     secondary_trigger_side: int = 180
     parallel_pipeline: bool = True
+    confidence_similarity_span: float = 0.28
+    confidence_margin_span: float = 0.12
+    known_state_persistence: float = 0.98
+    unknown_state_persistence: float = 0.93
+    frame_known_probability: float = 0.35
+    accepted_track_probability_floor: float = 0.45
+    min_competing_segment_frames: int = 8
+    competing_segment_ratio: float = 0.80
+    global_confidence_weight: float = 0.70
+    frame_confidence_weight: float = 0.30
 
 
 @dataclass
@@ -112,6 +125,23 @@ class _TrackDecision:
     top_matches: list[CelebrityMatch] = field(default_factory=list)
     support_count: int = 0
     votes: int = 0
+    competing_votes: int = 0
+    evidence_frames: int = 0
+    vote_ratio: float = 0.0
+    inlier_ratio: float = 0.0
+    rejection_reason: str = ""
+
+
+@dataclass
+class _FrameDecision:
+    label: str = "desconocido"
+    confidence: float = 0.0
+    distance: float = float("inf")
+    similarity: float = 0.0
+    margin: float = 0.0
+    local_confidence: float = 0.0
+    temporal_probability: float = 0.0
+    reason: str = "sin_evidencia"
 
 
 @dataclass
@@ -307,9 +337,12 @@ def analyze_video_offline(
                         stats,
                     )
 
-                if progress_callback and (
-                    frame_index == 0 or frame_index % max(1, int(fps)) == 0
-                ):
+                # El vaciado ocurre por cantidad de embeddings o por bloques de
+                # frames. Sus indices no necesariamente coinciden con multiplos
+                # del FPS (por ejemplo, bloques de 24 en un video de 30 FPS), por
+                # lo que filtrar nuevamente por FPS podia impedir que la GUI
+                # recibiera progreso durante toda la primera pasada.
+                if progress_callback:
                     progress_callback(
                         0.82 * (frame_index + 1) / total_frames,
                         f"Pasada 1/2: frame {frame_index + 1}/{total_frames}",
@@ -429,19 +462,28 @@ def _finalize_analysis(
         )
 
     synthetic_count = _fill_short_track_gaps(frame_observations, tracks, config, fps)
-    records = _records_from_observations(frame_observations, tracks, fps)
+    records = _records_from_observations(frame_observations, tracks, fps, config)
     recognized_tracks = sum(track.decision.label != "desconocido" for track in tracks)
+    rejection_reasons = Counter(
+        track.decision.rejection_reason
+        for track in tracks
+        if track.decision.label == "desconocido" and track.decision.rejection_reason
+    )
     metadata = {
-        "pipeline": "offline_multiscale_tracks_v3_batch",
+        "pipeline": "offline_bidirectional_tracks_v4_cpu_batch",
         "frames_analyzed": len(frame_observations),
         "tracks": len(tracks),
         "recognized_tracks": recognized_tracks,
+        "rejection_reasons": dict(rejection_reasons),
         "synthetic_gap_frames": synthetic_count,
         "detections": stats["detections"],
         "embedding_errors": stats["embedding_errors"],
         "scene_cuts": stats["scene_cuts"],
         "min_similarity": config.min_similarity,
         "min_similarity_margin": config.min_similarity_margin,
+        "temporal_vote_ratio": config.temporal_vote_ratio,
+        "strong_track_min_vote_ratio": config.strong_track_min_vote_ratio,
+        "max_competing_vote_ratio": config.max_competing_vote_ratio,
         "secondary_scale": config.secondary_scale,
         "secondary_strategy": config.secondary_strategy,
         "embedding_batch_size": config.embedding_batch_size,
@@ -541,7 +583,7 @@ def _save_feature_cache(path: Path | str, metadata: dict, arrays: dict) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = dict(arrays)
-    payload["metadata_json"] = np.array([json.dumps(metadata, ensure_ascii=False)], dtype=np.unicode_)
+    payload["metadata_json"] = np.array([json.dumps(metadata, ensure_ascii=False)], dtype=np.str_)
     temp_path = path.with_suffix(path.suffix + ".tmp")
     with temp_path.open("wb") as handle:
         np.savez_compressed(handle, **payload)
@@ -872,7 +914,10 @@ def _decide_track(track, celebrity_index, config):
     ]
     embeddings = [item.embedding for item in observations] + alternate_embeddings + track.extra_embeddings
     if len(embeddings) < config.min_track_embeddings:
-        return _TrackDecision()
+        return _TrackDecision(
+            evidence_frames=len(observations),
+            rejection_reason="evidencia_insuficiente",
+        )
     matrix = np.vstack(embeddings).astype(np.float32)
     weights = np.array(
         [item.quality.weight for item in observations]
@@ -882,24 +927,45 @@ def _decide_track(track, celebrity_index, config):
     aggregate = _robust_embedding(matrix, weights)
     matches = celebrity_index.top_unique(aggregate, limit=5)
     if celebrity_match_rejection_reason(matches, config.min_similarity, config.min_similarity_margin):
-        return _TrackDecision(top_matches=matches)
+        return _TrackDecision(
+            top_matches=matches,
+            evidence_frames=len(observations),
+            rejection_reason="agregado_ambiguo",
+        )
 
     best = matches[0]
-    votes = sum(
-        bool(item.top_matches)
-        and item.top_matches[0].name == best.name
-        and celebrity_match_rejection_reason(
+    votes = 0
+    competing_votes = 0
+    for item in observations:
+        if not item.top_matches:
+            continue
+        accepted = celebrity_match_rejection_reason(
             item.top_matches,
             config.min_similarity,
             config.min_similarity_margin,
-        )
-        is None
-        for item in observations
-    )
+        ) is None
+        if not accepted:
+            continue
+        if item.top_matches[0].name == best.name:
+            votes += 1
+        else:
+            competing_votes += 1
+
+    evidence_frames = len(observations)
+    vote_ratio = votes / max(1, evidence_frames)
+    competing_ratio = competing_votes / max(1, evidence_frames)
     required_votes = max(
         config.min_temporal_votes,
-        int(np.ceil(min(len(observations), 5) * config.temporal_vote_ratio)),
+        int(np.ceil(evidence_frames * config.temporal_vote_ratio)),
     )
+
+    primary_matrix = np.vstack([item.embedding for item in observations]).astype(np.float32)
+    aggregate_similarities = primary_matrix @ aggregate
+    median_similarity = float(np.median(aggregate_similarities))
+    mad = float(np.median(np.abs(aggregate_similarities - median_similarity)))
+    inlier_floor = max(0.30, median_similarity - 3.5 * max(mad, 0.01))
+    inlier_ratio = float(np.mean(aggregate_similarities >= inlier_floor))
+
     sample_embeddings = celebrity_index.sample_embeddings_for_person(best.name)
     support_threshold = max(0.28, config.min_similarity - config.sample_support_slack)
     support_count = 0
@@ -907,9 +973,33 @@ def _decide_track(track, celebrity_index, config):
         sample_similarities = sample_embeddings @ aggregate
         support_count = int(np.count_nonzero(sample_similarities >= support_threshold))
     required_support = min(config.sample_support_count, len(sample_embeddings))
+    rejection_reason = ""
     strong_aggregate = best.similarity >= config.min_similarity + 0.08
-    if support_count < required_support or (votes < required_votes and not strong_aggregate):
-        return _TrackDecision(top_matches=matches, support_count=support_count, votes=votes)
+    strong_track_rescue = (
+        strong_aggregate
+        and votes >= config.min_temporal_votes
+        and vote_ratio >= config.strong_track_min_vote_ratio
+        and competing_ratio <= config.max_competing_vote_ratio
+    )
+    if support_count < required_support:
+        rejection_reason = "soporte_individual_insuficiente"
+    elif (votes < required_votes or vote_ratio < config.temporal_vote_ratio) and not strong_track_rescue:
+        rejection_reason = "votos_temporales_insuficientes"
+    elif competing_ratio > config.max_competing_vote_ratio:
+        rejection_reason = "identidades_competidoras"
+    elif inlier_ratio < config.min_embedding_inlier_ratio:
+        rejection_reason = "track_inconsistente"
+    if rejection_reason:
+        return _TrackDecision(
+            top_matches=matches,
+            support_count=support_count,
+            votes=votes,
+            competing_votes=competing_votes,
+            evidence_frames=evidence_frames,
+            vote_ratio=vote_ratio,
+            inlier_ratio=inlier_ratio,
+            rejection_reason=rejection_reason,
+        )
 
     return _TrackDecision(
         label=best.name,
@@ -919,6 +1009,10 @@ def _decide_track(track, celebrity_index, config):
         top_matches=matches,
         support_count=support_count,
         votes=votes,
+        competing_votes=competing_votes,
+        evidence_frames=evidence_frames,
+        vote_ratio=vote_ratio,
+        inlier_ratio=inlier_ratio,
     )
 
 
@@ -935,6 +1029,242 @@ def _robust_embedding(matrix, weights):
         selected = matrix[keep]
         selected_weights = weights[keep]
     return _normalize(np.average(selected, axis=0, weights=np.maximum(selected_weights, 0.05)))
+
+
+def _frame_decisions_for_tracks(tracks, config):
+    """Resuelve conocido/desconocido usando todo el track sin fijar su confianza."""
+    decisions = {}
+    for track in tracks:
+        observations = sorted(track.observations, key=lambda item: item.frame_index)
+        if not observations:
+            continue
+        if track.decision.label == "desconocido":
+            for observation in observations:
+                decisions[id(observation)] = _FrameDecision(
+                    reason=track.decision.rejection_reason or "track_desconocido"
+                )
+            continue
+
+        emissions = []
+        local_rows = []
+        for observation in observations:
+            row = _local_identity_evidence(observation, track.decision.label, config)
+            local_rows.append(row)
+            emissions.append(row["emission"])
+
+        temporal_probabilities = _bidirectional_known_probabilities(
+            np.asarray(emissions, dtype=np.float64),
+            config,
+        )
+        competing_vetoes = _confirmed_competing_segments(
+            local_rows,
+            temporal_probabilities,
+            config,
+        )
+        track_confidence = _track_display_confidence(track.decision, config)
+        for observation, row, temporal_probability, competing_veto in zip(
+            observations,
+            local_rows,
+            temporal_probabilities,
+            competing_vetoes,
+        ):
+            is_known = not competing_veto
+            temporal_confidence = max(
+                float(temporal_probability), config.accepted_track_probability_floor
+            )
+            frame_confidence = (
+                0.85 * row["local_confidence"]
+                + 0.15 * temporal_confidence
+            )
+            confidence = float(
+                np.clip(
+                    config.global_confidence_weight * track_confidence
+                    + config.frame_confidence_weight * frame_confidence,
+                    0.0,
+                    0.99,
+                )
+            )
+            decisions[id(observation)] = _FrameDecision(
+                label=track.decision.label if is_known else "desconocido",
+                confidence=confidence if is_known else 0.0,
+                distance=row["distance"] if is_known else float("inf"),
+                similarity=row["similarity"],
+                margin=row["margin"],
+                local_confidence=row["local_confidence"],
+                temporal_probability=float(temporal_probability),
+                reason=row["reason"] if is_known else "identidad_competidora_sostenida",
+            )
+    return decisions
+
+
+def _local_identity_evidence(observation, label, config):
+    if observation.embedding is None or not observation.top_matches:
+        return {
+            "similarity": 0.0,
+            "margin": 0.0,
+            "distance": float("inf"),
+            "local_confidence": 0.0,
+            "emission": 0.50,
+            "reason": "interpolado" if observation.synthetic else "sin_embedding",
+        }
+
+    candidate = next((item for item in observation.top_matches if item.name == label), None)
+    best = observation.top_matches[0]
+    competing = max(
+        (item.similarity for item in observation.top_matches if item.name != label),
+        default=-1.0,
+    )
+    similarity = float(candidate.similarity) if candidate is not None else 0.0
+    margin = similarity - float(competing)
+    similarity_score = float(
+        np.clip(
+            (similarity - config.min_similarity) / max(config.confidence_similarity_span, 1e-6),
+            0.0,
+            1.0,
+        )
+    )
+    margin_score = float(
+        np.clip(
+            (margin - config.min_similarity_margin) / max(config.confidence_margin_span, 1e-6),
+            0.0,
+            1.0,
+        )
+    )
+    quality_score = float(np.clip(observation.quality.weight, 0.0, 1.0))
+    similarity_confidence = float(np.clip(0.35 + 0.65 * similarity_score, 0.0, 1.0))
+    margin_confidence = float(
+        np.clip(0.35 + 0.65 * margin_score, 0.0, 1.0)
+    )
+    local_confidence = (
+        0.60 * similarity_confidence
+        + 0.25 * margin_confidence
+        + 0.15 * quality_score
+    )
+
+    best_is_competitor = best.name != label and celebrity_match_rejection_reason(
+        observation.top_matches,
+        config.min_similarity,
+        config.min_similarity_margin,
+    ) is None
+    if best_is_competitor:
+        local_confidence = 0.20 * quality_score
+        emission = 0.03
+        reason = "identidad_competidora"
+    elif candidate is None:
+        local_confidence = 0.15 * quality_score
+        emission = 0.38
+        reason = "candidato_ausente"
+    elif similarity < config.min_similarity:
+        emission = 0.38 + 0.12 * similarity_score
+        reason = "similitud_baja"
+    elif margin < config.min_similarity_margin:
+        emission = 0.48 + 0.10 * similarity_score
+        reason = "margen_bajo"
+    else:
+        emission = 0.62 + 0.36 * local_confidence
+        reason = "evidencia_local"
+
+    return {
+        "similarity": similarity,
+        "margin": margin,
+        "distance": float(candidate.distance) if candidate is not None else float("inf"),
+        "local_confidence": float(local_confidence),
+        "emission": float(np.clip(emission, 0.01, 0.99)),
+        "reason": reason,
+    }
+
+
+def _track_display_confidence(decision, config):
+    """Puntaje estable del track; no pretende ser una probabilidad estadistica."""
+    similarity_component = 0.55 + 0.43 * float(
+        np.clip(
+            (decision.similarity - config.min_similarity)
+            / max(config.confidence_similarity_span, 1e-6),
+            0.0,
+            1.0,
+        )
+    )
+    if len(decision.top_matches) > 1:
+        aggregate_margin = decision.top_matches[0].similarity - decision.top_matches[1].similarity
+    else:
+        aggregate_margin = config.min_similarity_margin + config.confidence_margin_span
+    margin_component = 0.50 + 0.50 * float(
+        np.clip(
+            (aggregate_margin - config.min_similarity_margin)
+            / max(config.confidence_margin_span, 1e-6),
+            0.0,
+            1.0,
+        )
+    )
+    support_component = float(
+        np.clip(
+            decision.support_count / max(1, config.sample_support_count),
+            0.0,
+            1.0,
+        )
+    )
+    return float(
+        np.clip(
+            0.40 * similarity_component
+            + 0.25 * decision.vote_ratio
+            + 0.15 * decision.inlier_ratio
+            + 0.10 * support_component
+            + 0.10 * margin_component,
+            0.50,
+            0.99,
+        )
+    )
+
+
+def _bidirectional_known_probabilities(known_emissions, config):
+    if known_emissions.size == 0:
+        return np.empty(0, dtype=np.float64)
+    emissions = np.column_stack((1.0 - known_emissions, known_emissions))
+    transition = np.array(
+        [
+            [config.unknown_state_persistence, 1.0 - config.unknown_state_persistence],
+            [1.0 - config.known_state_persistence, config.known_state_persistence],
+        ],
+        dtype=np.float64,
+    )
+    forward = np.empty_like(emissions)
+    forward[0] = np.array([0.05, 0.95]) * emissions[0]
+    forward[0] /= max(float(forward[0].sum()), 1e-12)
+    for index in range(1, len(emissions)):
+        forward[index] = (forward[index - 1] @ transition) * emissions[index]
+        forward[index] /= max(float(forward[index].sum()), 1e-12)
+
+    backward = np.ones_like(emissions)
+    for index in range(len(emissions) - 2, -1, -1):
+        backward[index] = transition @ (emissions[index + 1] * backward[index + 1])
+        backward[index] /= max(float(backward[index].sum()), 1e-12)
+
+    posterior = forward * backward
+    posterior /= np.maximum(posterior.sum(axis=1, keepdims=True), 1e-12)
+    return posterior[:, 1]
+
+
+def _confirmed_competing_segments(local_rows, temporal_probabilities, config):
+    """Veta solo contradicciones largas dominadas por otra identidad conocida."""
+    vetoes = np.zeros(len(local_rows), dtype=np.bool_)
+    low_probability = temporal_probabilities < config.frame_known_probability
+    index = 0
+    while index < len(local_rows):
+        if not low_probability[index]:
+            index += 1
+            continue
+        end = index + 1
+        while end < len(local_rows) and low_probability[end]:
+            end += 1
+        segment = local_rows[index:end]
+        competing = sum(row["reason"] == "identidad_competidora" for row in segment)
+        if (
+            len(segment) >= config.min_competing_segment_frames
+            and competing / len(segment) >= config.competing_segment_ratio
+        ):
+            vetoes[index:end] = True
+        index = end
+    return vetoes
 
 
 def _refine_unresolved_tracks(
@@ -1046,17 +1376,21 @@ def _fill_short_track_gaps(frame_observations, tracks, config, fps):
                     scene_id=previous.scene_id,
                 )
                 frame_observations[frame_index].append(synthetic)
+                track.observations.append(synthetic)
                 count += 1
+        track.observations.sort(key=lambda item: item.frame_index)
     return count
 
 
-def _records_from_observations(frame_observations, tracks, fps):
+def _records_from_observations(frame_observations, tracks, fps, config):
     decisions = {track.track_id: track.decision for track in tracks}
+    frame_decisions = _frame_decisions_for_tracks(tracks, config)
     records = []
     for frame_index, observations in enumerate(frame_observations):
         faces = []
         for observation in observations:
             decision = decisions[observation.track_id]
+            frame_decision = frame_decisions[id(observation)]
             raw_matches = observation.top_matches[:3]
             faces.append(
                 {
@@ -1066,10 +1400,14 @@ def _records_from_observations(frame_observations, tracks, fps):
                         for point in observation.detection.landmarks
                     ],
                     "detection_confidence": float(observation.detection.confidence),
-                    "label": decision.label,
-                    "confidence": decision.confidence,
-                    "distance": decision.distance if np.isfinite(decision.distance) else None,
-                    "method": "offline_track" if decision.label != "desconocido" else "offline_rechazo",
+                    "label": frame_decision.label,
+                    "confidence": frame_decision.confidence,
+                    "distance": frame_decision.distance
+                    if np.isfinite(frame_decision.distance)
+                    else None,
+                    "method": "offline_bidireccional"
+                    if frame_decision.label != "desconocido"
+                    else "offline_rechazo",
                     "track_id": observation.track_id,
                     "synthetic": observation.synthetic,
                     "quality": observation.quality.as_dict(),
@@ -1081,6 +1419,27 @@ def _records_from_observations(frame_observations, tracks, fps):
                         "similarity": round(decision.similarity, 6),
                         "support_count": decision.support_count,
                         "votes": decision.votes,
+                        "competing_votes": decision.competing_votes,
+                        "evidence_frames": decision.evidence_frames,
+                        "vote_ratio": round(decision.vote_ratio, 6),
+                        "inlier_ratio": round(decision.inlier_ratio, 6),
+                        "rejection_reason": decision.rejection_reason,
+                        "display_confidence": round(
+                            _track_display_confidence(decision, config),
+                            6,
+                        )
+                        if decision.label != "desconocido"
+                        else 0.0,
+                    },
+                    "frame_evidence": {
+                        "similarity": round(frame_decision.similarity, 6),
+                        "margin": round(frame_decision.margin, 6),
+                        "local_confidence": round(frame_decision.local_confidence, 6),
+                        "temporal_probability": round(
+                            frame_decision.temporal_probability,
+                            6,
+                        ),
+                        "reason": frame_decision.reason,
                     },
                 }
             )

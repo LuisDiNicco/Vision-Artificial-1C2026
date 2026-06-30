@@ -16,7 +16,9 @@ from .video_inputs import VIDEO_DOWNLOAD_DIR
 
 
 ANALYSIS_CACHE_DIR = VIDEO_DOWNLOAD_DIR / "analysis"
-ANALYSIS_CACHE_VERSION = 7
+FEATURE_CACHE_DIR = ANALYSIS_CACHE_DIR / "features"
+ANALYSIS_CACHE_VERSION = 12
+VIDEO_FEATURE_CACHE_VERSION = 1
 LANDMARK_CACHE_STEP = 1
 
 
@@ -38,6 +40,20 @@ def analysis_cache_path(video_path: Path, sample_seconds: float, min_similarity:
         identity["celebrity_index_mtime_ns"] = celebrity_stat.st_mtime_ns
     digest = hashlib.sha1(json.dumps(identity, sort_keys=True).encode("utf-8")).hexdigest()
     return ANALYSIS_CACHE_DIR / f"{digest}.json"
+
+
+def video_feature_cache_path(video_path: Path) -> Path:
+    """Cachea detecciones y embeddings, independientes de umbrales de identidad."""
+    video_path = video_path.resolve()
+    stat = video_path.stat()
+    identity = {
+        "version": VIDEO_FEATURE_CACHE_VERSION,
+        "path": str(video_path),
+        "size": stat.st_size,
+        "mtime_ns": stat.st_mtime_ns,
+    }
+    digest = hashlib.sha1(json.dumps(identity, sort_keys=True).encode("utf-8")).hexdigest()
+    return FEATURE_CACHE_DIR / f"{digest}.npz"
 
 
 def save_video_analysis(

@@ -1,5 +1,7 @@
 # TP Integrador - Reconocimiento Facial - Visión Artificial (1C 2026)
 
+El perfil, los benchmarks y la aceleración reversible del análisis offline se documentan en [OPTIMIZACION_VIDEO.md](OPTIMIZACION_VIDEO.md).
+
 ## Datos del trabajo práctico
 - **Materia:** Visión Artificial
 - **Institución:** UNLaM
