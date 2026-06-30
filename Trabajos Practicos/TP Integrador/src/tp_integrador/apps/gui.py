@@ -88,24 +88,17 @@ class FaceRecognitionGui:
         self.camera_index = camera_index
         self.max_camera_index = max_camera_index
         self.mode = "registro"
-        self.status = "Listo para iniciar"
         self.count_current = 0
         self.capture_requested = False
         self.train_requested = False
         self.video_file_path = ""
         self.youtube_video_path = None
-        self.video_actor_results = []
         self.video_playback_cap = None
         self.video_playback_path = None
-        self.video_playback_frame_index = 0
         self.video_playback_last_predictions = []
         self.video_playback_last_detections = []
         self.video_playback_last_detection_seconds = float("-inf")
-        self.video_playback_detection_interval = 1
-        self.video_playback_recognition_interval = 8
         self.video_playback_min_similarity = 0.34
-        self.video_playback_frame_duration = 1.0 / 25.0
-        self.video_playback_last_frame_time = 0.0
         self.video_playback_paused = False
         self.video_playback_seek_pending = False
         self.video_playback_fps = 25.0
@@ -382,7 +375,6 @@ class FaceRecognitionGui:
         self.last_predictions = []
         self.recent_embeddings.clear()
         self.recent_predictions.clear()
-        self.video_actor_results = []
         self.static_display_frame = None
 
     def _open_camera(self, index: int) -> bool:
@@ -439,12 +431,6 @@ class FaceRecognitionGui:
         self.recent_embeddings.clear()
         self.recent_predictions.clear()
         self._set_status("Modo reconocimiento activo.")
-
-    def _on_mode_changed(self, sender, app_data, user_data=None) -> None:
-        self.mode = "registro" if app_data == "Registro" else "reconocimiento"
-        self.recent_embeddings.clear()
-        self.recent_predictions.clear()
-        self._set_status(f"Modo activo: {app_data}")
 
     def _on_person_changed(self, sender, app_data, user_data=None) -> None:
         self._update_person_count()
@@ -662,7 +648,6 @@ class FaceRecognitionGui:
         with self.video_playback_lock:
             self.video_playback_cap = next_cap
             self.video_playback_path = str(video_path)
-            self.video_playback_frame_index = 0
             self.video_playback_last_predictions = []
             self.video_playback_last_detections = []
             self.video_playback_last_detection_seconds = float("-inf")
@@ -671,8 +656,6 @@ class FaceRecognitionGui:
             self.video_playback_fps = max(float(fps), 1.0)
             frame_count = max(float(next_cap.get(cv2.CAP_PROP_FRAME_COUNT)), 0.0)
             self.video_playback_duration = frame_count / self.video_playback_fps if frame_count else 0.0
-            self.video_playback_frame_duration = 1.0 / self.video_playback_fps
-            self.video_playback_last_frame_time = 0.0
             self.video_playback_paused = False
             self.video_playback_seek_pending = False
             self.video_playback_clock_base = 0.0
@@ -681,7 +664,6 @@ class FaceRecognitionGui:
             self.video_playback_current_seconds = 0.0
             self.video_playback_recognition_period = sample_seconds
             self.video_playback_last_recognition_seconds = float("-inf")
-            self.video_playback_recognition_interval = max(1, int(round(fps * sample_seconds)))
             self.video_playback_uses_cache = cached_payload is not None
             if cached_payload is not None:
                 self.video_cached_times, self.video_cached_records = prepare_analysis_timeline(cached_payload)
@@ -711,8 +693,6 @@ class FaceRecognitionGui:
             self.video_playback_last_predictions = []
             self.video_playback_last_detections = []
             self.video_playback_last_detection_seconds = float("-inf")
-            self.video_playback_frame_index = 0
-            self.video_playback_last_frame_time = 0.0
             self.video_playback_paused = False
             self.video_playback_seek_pending = False
             self.video_playback_duration = 0.0
@@ -739,7 +719,6 @@ class FaceRecognitionGui:
                 self.video_playback_clock_base = self._playback_position_locked(now)
                 self.video_playback_paused = True
             paused = self.video_playback_paused
-            self.video_playback_last_frame_time = now
         self.dpg.configure_item(
             "video_play_pause_button",
             label=">" if paused else "||",
@@ -765,7 +744,6 @@ class FaceRecognitionGui:
             seconds = max(0.0, min(requested_seconds, self.video_playback_duration))
             target_frame = max(0, int(round(seconds * self.video_playback_fps)))
             self.video_playback_cap.set(cv2.CAP_PROP_POS_FRAMES, target_frame)
-            self.video_playback_frame_index = target_frame
             self.video_playback_displayed_frame = target_frame - 1
             self.video_playback_current_seconds = seconds
             self.video_playback_clock_base = seconds
@@ -774,7 +752,6 @@ class FaceRecognitionGui:
             self.video_playback_last_predictions = []
             self.video_playback_last_detections = []
             self.video_playback_last_detection_seconds = float("-inf")
-            self.video_playback_last_frame_time = 0.0
             self.video_playback_seek_pending = True
         self._reset_video_recognition_history()
         self._update_playback_time(seconds)
@@ -847,7 +824,6 @@ class FaceRecognitionGui:
                     self.video_playback_cap.set(cv2.CAP_PROP_POS_FRAMES, target_frame)
                 ok, frame = self.video_playback_cap.read()
                 actual_frame = max(0, int(self.video_playback_cap.get(cv2.CAP_PROP_POS_FRAMES)) - 1)
-                self.video_playback_frame_index = actual_frame
                 self.video_playback_displayed_frame = actual_frame
                 self.video_playback_current_seconds = current_seconds
             self.video_playback_seek_pending = False
@@ -1040,23 +1016,7 @@ class FaceRecognitionGui:
             return None
         return self.video_file_path
 
-    def _update_video_actor_results(self) -> None:
-        if not self.dpg.does_item_exist("video_results_text"):
-            return
-        if not self.video_actor_results:
-            self.dpg.set_value("video_results_text", "Sin coincidencias confiables.")
-            return
-        lines = []
-        for result in self.video_actor_results[:8]:
-            lines.append(
-                f"{result.name}: conf {result.confidence * 100:.0f}% | "
-                f"sim {result.similarity * 100:.1f}% | "
-                f"{result.samples} muestras | {result.first_second:.1f}s-{result.last_second:.1f}s"
-            )
-        self.dpg.set_value("video_results_text", "\n".join(lines))
-
     def _set_status(self, message: str) -> None:
-        self.status = message
         if self.dpg.does_item_exist("status_text"):
             self.dpg.set_value("status_text", message)
 

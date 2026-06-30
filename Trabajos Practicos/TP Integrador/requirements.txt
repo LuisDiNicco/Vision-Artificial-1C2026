@@ -8,8 +8,6 @@ numpy; python_version >= "3.13"
 pandas>=2.2
 pyarrow>=15.0
 pillow>=10.0
-mss>=9.0
-pygetwindow>=0.0.9
 yt-dlp>=2025.1.15
 
 # ArcFace depende de TensorFlow, que no tiene wheel estable para Python 3.14.

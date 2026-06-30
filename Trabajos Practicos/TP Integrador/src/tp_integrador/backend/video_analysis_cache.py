@@ -3,7 +3,6 @@ from __future__ import annotations
 import bisect
 import hashlib
 import json
-import math
 from pathlib import Path
 from typing import Iterable
 
@@ -19,7 +18,6 @@ ANALYSIS_CACHE_DIR = VIDEO_DOWNLOAD_DIR / "analysis"
 FEATURE_CACHE_DIR = ANALYSIS_CACHE_DIR / "features"
 ANALYSIS_CACHE_VERSION = 12
 VIDEO_FEATURE_CACHE_VERSION = 1
-LANDMARK_CACHE_STEP = 1
 
 
 def analysis_cache_path(video_path: Path, sample_seconds: float, min_similarity: float) -> Path:
@@ -91,35 +89,6 @@ def load_video_analysis(path: Path) -> dict:
     if payload.get("version") != ANALYSIS_CACHE_VERSION:
         raise ValueError("Version de cache de video incompatible.")
     return payload
-
-
-def make_analysis_record(
-    seconds: float,
-    detections: Iterable[FaceDetection],
-    predictions: Iterable[Prediction],
-) -> dict:
-    detections = list(detections)
-    predictions = list(predictions)
-    faces = []
-    for index, detection in enumerate(detections):
-        prediction = predictions[index] if index < len(predictions) else None
-        faces.append(
-            {
-                "bbox": [int(value) for value in detection.bbox],
-                "landmarks": [
-                    [int(round(point[0])), int(round(point[1])), round(float(point[2]), 6)]
-                    for point in detection.landmarks[::LANDMARK_CACHE_STEP]
-                ],
-                "detection_confidence": float(detection.confidence),
-                "label": prediction.label if prediction else "desconocido",
-                "confidence": float(prediction.confidence) if prediction else 0.0,
-                "distance": float(prediction.distance)
-                if prediction and math.isfinite(float(prediction.distance))
-                else None,
-                "method": prediction.method if prediction else "sin_prediccion",
-            }
-        )
-    return {"seconds": float(seconds), "faces": faces}
 
 
 def prepare_analysis_timeline(payload: dict) -> tuple[list[float], list[dict]]:
