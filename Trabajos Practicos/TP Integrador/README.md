@@ -207,7 +207,7 @@ El reporte completo se guarda en `datos/evaluacion_reconocimiento.json`.
 | `C` | Cambiar a la siguiente cámara disponible |
 | `Q` o `ESC` | Salir |
 
-La interfaz muestra una barra superior con el modo activo, un panel inferior con estado/atajos y anotaciones sobre cada rostro con landmarks y caja. En webcam muestra el puntaje del clasificador; en el analisis offline de video muestra la similitud coseno local con la identidad global del track, no una probabilidad.
+La interfaz muestra una barra superior con el modo activo, un panel inferior con estado/atajos y anotaciones sobre cada rostro con landmarks y caja. En webcam muestra el puntaje del clasificador; tanto el video en vivo como el analisis offline muestran similitud coseno, no una probabilidad. El vivo usa evidencia reciente y el offline asigna la identidad con el track completo.
 
 ### Frontend
 

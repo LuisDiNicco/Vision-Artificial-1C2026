@@ -39,7 +39,10 @@ def draw_face_annotations(
         if prediction:
             metric = (
                 "similitud"
-                if prediction.method.startswith("offline_")
+                if (
+                    prediction.method.startswith("offline_")
+                    or prediction.method.startswith("famosos")
+                )
                 and prediction.label != "desconocido"
                 else ""
             )

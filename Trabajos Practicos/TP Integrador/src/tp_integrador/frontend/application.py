@@ -1027,7 +1027,9 @@ class FaceRecognitionGui:
                     continue
                 match = matches[0]
                 self.video_uncertain_samples = 0
-                confidence = float(np.clip((match.similarity - self.video_playback_min_similarity) / 0.30, 0.0, 1.0))
+                # ArcFace produce embeddings normalizados: el producto con el
+                # centroide es la similitud coseno que mostramos directamente.
+                confidence = float(np.clip(match.similarity, 0.0, 1.0))
                 predictions.append(Prediction(match.name, confidence, match.distance, method="famosos"))
 
             if len(predictions) == 1:
@@ -1059,7 +1061,7 @@ class FaceRecognitionGui:
             previous = self.video_playback_last_predictions[0]
             return Prediction(
                 previous.label,
-                previous.confidence * 0.90,
+                previous.confidence,
                 previous.distance,
                 method=f"{reason}+histeresis",
             )
