@@ -1,4 +1,4 @@
-from .widgets import add_section_header
+from .widgets import add_label_with_tooltip, add_section_header
 
 
 def add_video_analysis_tab(dpg, owner) -> None:
@@ -23,7 +23,13 @@ def add_video_analysis_tab(dpg, owner) -> None:
 
         dpg.add_spacer(height=8)
         dpg.add_text("2. Configurar analisis")
-        dpg.add_text("Intervalo de reconocimiento en vivo (segundos)", color=(190, 200, 210))
+        add_label_with_tooltip(
+            dpg,
+            "Intervalo de reconocimiento en vivo (segundos)",
+            "Solo afecta la reproduccion sin preprocesamiento. Indica cada cuanto "
+            "se vuelve a ejecutar ArcFace: un intervalo menor actualiza la similitud "
+            "con mayor frecuencia, pero consume mas recursos. No cambia el analisis offline.",
+        )
         dpg.add_slider_float(
             label="",
             tag="video_sample_seconds",
@@ -33,7 +39,14 @@ def add_video_analysis_tab(dpg, owner) -> None:
             format="%.2f s",
             width=-1,
         )
-        dpg.add_text("Similitud minima para aceptar un famoso", color=(190, 200, 210))
+        add_label_with_tooltip(
+            dpg,
+            "Similitud minima para aceptar un famoso",
+            "Se aplica tanto al reconocimiento en vivo como al preprocesamiento offline. "
+            "Si la mejor coincidencia no alcanza este valor, se muestra desconocido. "
+            "No modifica la similitud coseno calculada; solo la decision de aceptarla. "
+            "Para cambiar un analisis ya guardado, ajusta el valor y vuelve a preprocesar.",
+        )
         dpg.add_slider_float(
             label="",
             tag="video_min_similarity",
