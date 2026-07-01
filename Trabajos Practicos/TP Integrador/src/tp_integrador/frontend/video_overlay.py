@@ -38,7 +38,7 @@ def draw_face_annotations(
 
         if prediction:
             metric = (
-                "sim"
+                "similitud coseno"
                 if prediction.method.startswith("offline_")
                 and prediction.label != "desconocido"
                 else ""
