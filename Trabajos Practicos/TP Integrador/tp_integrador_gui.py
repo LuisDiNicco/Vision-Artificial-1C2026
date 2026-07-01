@@ -17,7 +17,7 @@ from tp_integrador.backend.logging_config import configure_native_logs
 
 configure_native_logs()
 
-from tp_integrador.apps.gui import main
+from tp_integrador.frontend.application import main
 
 
 if __name__ == "__main__":

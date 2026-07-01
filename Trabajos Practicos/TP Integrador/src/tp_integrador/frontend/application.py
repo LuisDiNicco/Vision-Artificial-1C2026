@@ -38,10 +38,10 @@ from ..backend.video_analysis_cache import (
     video_feature_cache_path,
 )
 from ..backend.video_inputs import VIDEO_DOWNLOAD_DIR, download_youtube_video, looks_like_youtube_url
-from ..frontend.gui.help import HELP_TOPICS
-from ..frontend.gui.layout import build_main_window, build_support_windows
-from ..frontend.native_file_dialog import choose_video_file
-from ..frontend.video_overlay import draw_face_annotations
+from .gui.help import HELP_TOPICS
+from .gui.layout import build_main_window, build_support_windows
+from .native_file_dialog import choose_video_file
+from .video_overlay import draw_face_annotations
 
 
 VIDEO_W = 1280
@@ -906,6 +906,11 @@ class FaceRecognitionGui:
                 ok, frame = self.video_playback_cap.read()
                 actual_frame = max(0, int(self.video_playback_cap.get(cv2.CAP_PROP_POS_FRAMES)) - 1)
                 self.video_playback_displayed_frame = actual_frame
+                # Las anotaciones pertenecen al frame decodificado, no al reloj
+                # de pared que decide que frame toca mostrar. En velocidades
+                # distintas de 1x ambos valores pueden diferir por saltos del
+                # decoder, especialmente mientras se adelantan frames.
+                current_seconds = actual_frame / self.video_playback_fps
                 self.video_playback_current_seconds = current_seconds
             self.video_playback_seek_pending = False
         if not ok:
