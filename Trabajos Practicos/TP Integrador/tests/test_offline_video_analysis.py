@@ -21,6 +21,7 @@ from tp_integrador.backend.offline_video_analysis import (
     _measure_quality,
     _merge_compatible_tracks,
     _nms_detections,
+    _records_from_observations,
     _track_score,
     _observations_from_feature_arrays,
     _observations_to_feature_arrays,
@@ -325,6 +326,49 @@ class OfflineVideoAnalysisTests(unittest.TestCase):
         self.assertEqual(restored_metadata, metadata)
         np.testing.assert_array_equal(restored_arrays["frame_index"], arrays["frame_index"])
         np.testing.assert_array_equal(restored_arrays["embedding"], arrays["embedding"])
+
+    def test_offline_records_show_local_similarity_and_reuse_previous_value(self):
+        person = np.zeros(512, dtype=np.float32)
+        person[0] = 1.0
+        index = CelebrityIndex(
+            embeddings=np.vstack([person]),
+            names=["Persona A"],
+            image_paths=[Path("a.jpg")],
+        )
+        track = _Track(
+            0,
+            decision=_TrackDecision(label="Persona A", similarity=1.0, confidence=1.0),
+        )
+        measured = _Observation(
+            0, 0.0, detection((10, 10, 110, 110)), quality(), person, track_id=0
+        )
+        measured.top_matches = index.top_unique(person, limit=3)
+        reused = _Observation(
+            1,
+            1 / 30,
+            detection((11, 10, 111, 110)),
+            quality(),
+            None,
+            track_id=0,
+            synthetic=True,
+        )
+        track.observations.extend([measured, reused])
+
+        records = _records_from_observations(
+            [[measured], [reused]],
+            [track],
+            fps=30.0,
+            config=OfflineVideoConfig(),
+            celebrity_index=index,
+        )
+
+        first = records[0]["faces"][0]
+        second = records[1]["faces"][0]
+        self.assertEqual(first["similarity_source"], "measured")
+        self.assertEqual(second["similarity_source"], "previous")
+        self.assertAlmostEqual(first["similarity"], 1.0)
+        self.assertAlmostEqual(second["similarity"], first["similarity"])
+        self.assertAlmostEqual(second["confidence"], first["similarity"])
 
 
 if __name__ == "__main__":

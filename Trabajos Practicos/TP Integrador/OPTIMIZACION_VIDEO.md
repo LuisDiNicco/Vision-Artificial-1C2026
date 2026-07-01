@@ -17,8 +17,8 @@
 
 - La identidad del track se acepta con al menos 65% de votos temporales consistentes, margen top-1/top-2, soporte de muestras individuales y baja proporción de competidores. Un agregado especialmente fuerte puede rescatar un track desde 45% si conserva soporte, inliers y no acumula rivales.
 - Los embeddings alejados del agregado robusto se contabilizan como outliers; un track internamente inconsistente se rechaza como desconocido.
-- Una pasada probabilística hacia adelante y hacia atrás usa todo el track para modular la confianza. Solo veta el nombre cuando un segmento sostenido está dominado en al menos 80% por otra identidad conocida; blur y ambigüedad reducen el porcentaje sin romper el track.
-- La confianza mostrada se calcula por frame con similitud, margen, calidad y probabilidad temporal. Los frames borrosos o interpolados conservan contexto, pero reducen el porcentaje.
+- Un suavizado bidireccional usa todo el track para vetar el nombre solo cuando un segmento sostenido está dominado en al menos 80% por otra identidad conocida.
+- El porcentaje mostrado es la similitud coseno entre el embedding del frame y el centroide de la identidad global del track. Si un frame interpolado no tiene embedding, conserva visualmente la última similitud medida del mismo track y queda marcado como `previous` en el JSON.
 - El JSON conserva evidencia global y local para auditar por qué se aceptó o rechazó cada rostro.
 - Los caches de decisiones anteriores se invalidan y las features costosas quedan en un NPZ reutilizable.
 

@@ -462,7 +462,13 @@ def _finalize_analysis(
         )
 
     synthetic_count = _fill_short_track_gaps(frame_observations, tracks, config, fps)
-    records = _records_from_observations(frame_observations, tracks, fps, config)
+    records = _records_from_observations(
+        frame_observations,
+        tracks,
+        fps,
+        config,
+        celebrity_index,
+    )
     recognized_tracks = sum(track.decision.label != "desconocido" for track in tracks)
     rejection_reasons = Counter(
         track.decision.rejection_reason
@@ -1382,15 +1388,31 @@ def _fill_short_track_gaps(frame_observations, tracks, config, fps):
     return count
 
 
-def _records_from_observations(frame_observations, tracks, fps, config):
+def _records_from_observations(frame_observations, tracks, fps, config, celebrity_index):
     decisions = {track.track_id: track.decision for track in tracks}
     frame_decisions = _frame_decisions_for_tracks(tracks, config)
+    centroid_by_name = {
+        name: celebrity_index.embeddings[index]
+        for index, name in enumerate(celebrity_index.names)
+    }
+    previous_similarity_by_track = {}
     records = []
     for frame_index, observations in enumerate(frame_observations):
         faces = []
         for observation in observations:
             decision = decisions[observation.track_id]
             frame_decision = frame_decisions[id(observation)]
+            display_similarity, similarity_source = _display_similarity(
+                observation,
+                frame_decision,
+                centroid_by_name,
+                previous_similarity_by_track,
+            )
+            display_distance = (
+                float(np.sqrt(max(0.0, 2.0 - 2.0 * display_similarity)))
+                if display_similarity is not None
+                else None
+            )
             raw_matches = observation.top_matches[:3]
             faces.append(
                 {
@@ -1401,10 +1423,12 @@ def _records_from_observations(frame_observations, tracks, fps, config):
                     ],
                     "detection_confidence": float(observation.detection.confidence),
                     "label": frame_decision.label,
-                    "confidence": frame_decision.confidence,
-                    "distance": frame_decision.distance
-                    if np.isfinite(frame_decision.distance)
-                    else None,
+                    # La GUI conserva el nombre historico ``confidence`` por
+                    # compatibilidad, pero en offline contiene similitud coseno.
+                    "confidence": display_similarity or 0.0,
+                    "similarity": display_similarity,
+                    "similarity_source": similarity_source,
+                    "distance": display_distance,
                     "method": "offline_bidireccional"
                     if frame_decision.label != "desconocido"
                     else "offline_rechazo",
@@ -1445,6 +1469,31 @@ def _records_from_observations(frame_observations, tracks, fps, config):
             )
         records.append({"seconds": frame_index / fps, "faces": faces})
     return records
+
+
+def _display_similarity(
+    observation,
+    frame_decision,
+    centroid_by_name,
+    previous_similarity_by_track,
+):
+    """Similitud local visible; no interviene en la decision de identidad."""
+    if frame_decision.label == "desconocido":
+        return None, "unavailable"
+
+    centroid = centroid_by_name.get(frame_decision.label)
+    if observation.embedding is not None and centroid is not None:
+        similarity = float(np.clip(observation.embedding @ centroid, 0.0, 1.0))
+        previous_similarity_by_track[observation.track_id] = (
+            observation.scene_id,
+            similarity,
+        )
+        return similarity, "measured"
+
+    previous = previous_similarity_by_track.get(observation.track_id)
+    if previous is not None and previous[0] == observation.scene_id:
+        return previous[1], "previous"
+    return None, "unavailable"
 
 
 def _interpolate_detection(a, b, alpha):

@@ -1299,11 +1299,13 @@ def format_offline_results(record: dict) -> str:
     for index, face in enumerate(faces, start=1):
         quality = face.get("quality", {})
         label = str(face.get("label", "desconocido"))
-        confidence = float(face.get("confidence", 0.0)) * 100.0
+        similarity = float(face.get("similarity") or 0.0) * 100.0
+        similarity_source = str(face.get("similarity_source", "unavailable"))
+        similarity_note = " (reutilizada)" if similarity_source == "previous" else ""
         usable = "usable" if quality.get("usable", False) else "descartada"
         synthetic = " | interpolado" if face.get("synthetic", False) else ""
         lines = [
-            f"Rostro {index} | {label} | confianza {confidence:.1f}%",
+            f"Rostro {index} | {label} | similitud local {similarity:.1f}%{similarity_note}",
             (
                 f"Calidad: {float(quality.get('weight', 0.0)) * 100.0:.1f}% ({usable})"
                 f" | motivo: {quality.get('reason', 'sin_dato')}{synthetic}"

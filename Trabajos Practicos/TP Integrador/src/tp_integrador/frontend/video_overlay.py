@@ -37,7 +37,13 @@ def draw_face_annotations(
                 cv2.circle(frame, (int(point[0]), int(point[1])), 2, (0, 255, 180), -1, cv2.LINE_AA)
 
         if prediction:
-            text = f"{prediction.label} {prediction.confidence * 100:.1f}%"
+            metric = (
+                "sim"
+                if prediction.method.startswith("offline_")
+                and prediction.label != "desconocido"
+                else ""
+            )
+            text = f"{prediction.label} {metric} {prediction.confidence * 100:.1f}%".replace("  ", " ")
             draw_label(frame, text, x1, max(32, y1 - 14), color)
 
 

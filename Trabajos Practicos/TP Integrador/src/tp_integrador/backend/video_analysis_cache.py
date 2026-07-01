@@ -16,7 +16,7 @@ from .video_inputs import VIDEO_DOWNLOAD_DIR
 
 ANALYSIS_CACHE_DIR = VIDEO_DOWNLOAD_DIR / "analysis"
 FEATURE_CACHE_DIR = ANALYSIS_CACHE_DIR / "features"
-ANALYSIS_CACHE_VERSION = 12
+ANALYSIS_CACHE_VERSION = 13
 VIDEO_FEATURE_CACHE_VERSION = 1
 
 
@@ -180,7 +180,8 @@ def _face_to_outputs(face: dict) -> tuple[FaceDetection, Prediction]:
         bbox=tuple(int(value) for value in face["bbox"]),
         landmarks=landmark_points,
         confidence=float(face.get("detection_confidence", 1.0)),
-        landmarks_are_sampled=True,
+        # El cache conserva los landmarks completos de MediaPipe.
+        landmarks_are_sampled=False,
     )
     prediction = Prediction(
         label=str(face.get("label", "desconocido")),
@@ -232,7 +233,7 @@ def _blend_face_outputs(prev_face: dict, next_face: dict, alpha: float) -> tuple
         bbox=bbox,
         landmarks=landmarks.astype(np.float32, copy=False),
         confidence=float((1.0 - alpha) * prev_detection.confidence + alpha * next_detection.confidence),
-        landmarks_are_sampled=True,
+        landmarks_are_sampled=False,
     )
     prediction = Prediction(
         label=label,
