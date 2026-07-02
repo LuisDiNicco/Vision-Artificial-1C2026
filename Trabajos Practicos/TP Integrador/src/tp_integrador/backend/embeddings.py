@@ -83,6 +83,53 @@ class ArcFaceEmbedder:
         embedding = np.array(self._face_rec.calc_emb(aligned_face_bgr), dtype=np.float32)
         return _normalize(embedding)
 
+    def embed_batch(self, aligned_faces_bgr: list[np.ndarray]) -> list[np.ndarray]:
+        """Extrae varios embeddings en una inferencia, conservando el preprocesado actual."""
+        if not aligned_faces_bgr:
+            return []
+        if self._backend != "deepface" or len(aligned_faces_bgr) == 1:
+            return [self.embed(face) for face in aligned_faces_bgr]
+
+        results = self._deepface.represent(
+            img_path=aligned_faces_bgr,
+            model_name="ArcFace",
+            detector_backend="skip",
+            enforce_detection=False,
+            align=False,
+        )
+        return [
+            _normalize(np.asarray(per_image[0]["embedding"], dtype=np.float32))
+            for per_image in results
+        ]
+
+    def embed_tta_batch(self, aligned_faces_bgr: list[np.ndarray]) -> list[np.ndarray]:
+        """Calcula original + flip en un unico batch y devuelve el mismo TTA normalizado."""
+        if not aligned_faces_bgr:
+            return []
+        inputs = list(aligned_faces_bgr)
+        inputs.extend(cv2.flip(face, 1) for face in aligned_faces_bgr)
+        embeddings = self.embed_batch(inputs)
+        offset = len(aligned_faces_bgr)
+        return [
+            _normalize(embeddings[index] + embeddings[index + offset])
+            for index in range(offset)
+        ]
+
+    def align_face_input(
+        self,
+        frame_bgr: np.ndarray,
+        detection: FaceDetection,
+    ) -> np.ndarray:
+        """Produce exactamente la entrada alineada usada por ``embed_face``."""
+        if self._backend == "deepface":
+            if self._alignment_backend == "mediapipe":
+                try:
+                    return align_face(frame_bgr, detection)
+                except Exception:
+                    pass
+            return self._deepface_aligned_face(_crop_detection(frame_bgr, detection))
+        return align_face(frame_bgr, detection)
+
     def embed_face(self, frame_bgr: np.ndarray, detection: FaceDetection) -> tuple[np.ndarray, np.ndarray]:
         """Extrae embedding desde el frame original y la deteccion de MediaPipe.
 

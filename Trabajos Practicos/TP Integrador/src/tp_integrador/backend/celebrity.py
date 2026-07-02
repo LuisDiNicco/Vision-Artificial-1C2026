@@ -14,6 +14,7 @@ CELEBRITY_DATASET = "ares1123/celebrity_dataset"
 CELEBRITY_CACHE_DIR = BASE_DIR / "cache" / "famosos"
 CELEBRITY_IMAGES_DIR = CELEBRITY_CACHE_DIR / "images"
 CELEBRITY_INDEX_PATH = CELEBRITY_CACHE_DIR / "celebrity_arcface_index.npz"
+CELEBRITY_MIN_MARGIN = 0.04
 
 
 @dataclass
@@ -23,6 +24,18 @@ class CelebrityMatch:
     distance: float
     image_path: Path
     samples: int = 1
+
+
+def celebrity_match_rejection_reason(
+    matches: List[CelebrityMatch],
+    min_similarity: float,
+    min_margin: float = CELEBRITY_MIN_MARGIN,
+) -> Optional[str]:
+    if not matches or matches[0].similarity < min_similarity:
+        return "umbral"
+    if len(matches) > 1 and matches[0].similarity - matches[1].similarity + 1e-6 < min_margin:
+        return "margen"
+    return None
 
 
 class CelebrityIndex:
