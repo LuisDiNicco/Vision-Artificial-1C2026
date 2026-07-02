@@ -10,6 +10,8 @@ from sklearn.svm import SVC
 
 MIN_SAMPLES_FOR_OUTLIER_FILTER = 8
 OUTLIER_MAD_FACTOR = 3.5
+SINGLE_CLASS_MIN_DISTANCE_THRESHOLD = 1.05
+MULTI_CLASS_DISTANCE_SLACK = 0.04
 
 
 @dataclass
@@ -50,7 +52,7 @@ class FaceSVMClassifier:
 
         nearest_label, nearest_distance = self._nearest_reference(embedding)
         calibrated_confidence = self._calibrated_confidence(nearest_label, nearest_distance)
-        threshold = self.class_thresholds.get(nearest_label, self.distance_threshold)
+        threshold = self._threshold_for_label(nearest_label)
 
         if self.pipeline is None:
             label = nearest_label if nearest_distance <= threshold else "desconocido"
@@ -71,6 +73,27 @@ class FaceSVMClassifier:
 
         confidence = max(calibrated_confidence, min(best_prob, 0.95) if best_label == nearest_label else 0.0)
         return Prediction(nearest_label, confidence, nearest_distance, method="calibrada")
+
+    def prediction_diagnostics(self, embedding: np.ndarray) -> Dict[str, object]:
+        """Devuelve los valores que explican una decision del reconocedor."""
+        self._ensure_runtime_defaults()
+        if not self.centroids:
+            return {"candidate": "sin_modelo"}
+        nearest_label, nearest_distance = self._nearest_reference(embedding)
+        threshold = self._threshold_for_label(nearest_label)
+        core = self.class_core_distances.get(nearest_label, threshold * 0.55)
+        return {
+            "candidate": nearest_label,
+            "distance": nearest_distance,
+            "core_distance": core,
+            "threshold": threshold,
+            "calibrated_confidence": self._calibrated_confidence(
+                nearest_label,
+                nearest_distance,
+            ),
+            "classes": len(self.centroids),
+            "training_samples": getattr(self, "training_sample_count", None),
+        }
 
     def _ensure_runtime_defaults(self) -> None:
         # Compatibilidad con modelos joblib entrenados antes de agregar calibracion.
@@ -100,8 +123,21 @@ class FaceSVMClassifier:
         idx = int(np.argmin(distances))
         return self.reference_labels[idx], float(distances[idx])
 
-    def _calibrated_confidence(self, label: str, distance: float) -> float:
+    def _threshold_for_label(self, label: str) -> float:
         threshold = self.class_thresholds.get(label, self.distance_threshold)
+        if len(self.centroids) == 1:
+            # Con una sola identidad no existe una frontera SVM contra otra
+            # clase. El umbral leave-one-out puede quedar demasiado ajustado
+            # cuando las capturas se toman en una misma sesion.
+            threshold = max(threshold, SINGLE_CLASS_MIN_DISTANCE_THRESHOLD)
+        else:
+            # Evita alternar entre identidad y desconocido por pequeñas
+            # oscilaciones de un frame alrededor del umbral calibrado.
+            threshold = min(1.05, threshold + MULTI_CLASS_DISTANCE_SLACK)
+        return float(threshold)
+
+    def _calibrated_confidence(self, label: str, distance: float) -> float:
+        threshold = self._threshold_for_label(label)
         core = self.class_core_distances.get(label, threshold * 0.55)
         if distance <= core:
             return 0.99

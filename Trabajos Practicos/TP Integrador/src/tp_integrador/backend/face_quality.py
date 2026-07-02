@@ -28,7 +28,10 @@ class FaceQualityConfig:
     max_brightness: float = 220.0
     min_blur: float = 45.0
     min_margin: int = 4
-    max_nose_shift: float = 0.22
+    # Dos esquinas por ojo no estiman yaw con suficiente precision para usar
+    # 0.22 como rechazo duro: rostros visualmente frontales suelen oscilar por
+    # encima de ese valor entre frames.
+    max_nose_shift: float = 0.38
     min_mouth_width: float = 0.35
     min_face_height: float = 0.75
     max_face_height: float = 2.25
@@ -49,6 +52,10 @@ VIDEO_FACE_QUALITY = FaceQualityConfig(
     min_face_height=0.62,
     max_face_height=2.50,
 )
+
+# En reconocimiento conviene tolerar movimientos leves entre frames. El
+# registro conserva el perfil estricto por defecto para guardar muestras buenas.
+WEBCAM_RECOGNITION_FACE_QUALITY = FaceQualityConfig(max_nose_shift=0.48)
 
 
 def assess_face_quality(

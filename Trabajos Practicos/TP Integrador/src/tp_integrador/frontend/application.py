@@ -1,5 +1,7 @@
 import argparse
 from collections import deque
+import logging
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 import shutil
 import sys
@@ -11,6 +13,33 @@ from ..backend.logging_config import configure_native_logs
 
 
 configure_native_logs()
+
+logger = logging.getLogger(__name__)
+
+
+def _configure_webcam_diagnostic_log() -> Path:
+    log_path = Path(__file__).resolve().parents[3] / "cache" / "logs" / "webcam_recognition.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    resolved_path = log_path.resolve()
+    already_configured = any(
+        isinstance(handler, RotatingFileHandler)
+        and Path(handler.baseFilename).resolve() == resolved_path
+        for handler in logger.handlers
+    )
+    if not already_configured:
+        handler = RotatingFileHandler(
+            log_path,
+            maxBytes=2_000_000,
+            backupCount=2,
+            encoding="utf-8",
+        )
+        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+        logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+    return log_path
+
+
+WEBCAM_DIAGNOSTIC_LOG_PATH = _configure_webcam_diagnostic_log()
 
 import cv2
 import numpy as np
@@ -26,7 +55,11 @@ from ..backend.clasificador import Prediction, save_classifier, train_classifier
 from ..backend.data import MODEL_PATH, count_embeddings_for_person, load_embeddings, save_sample
 from ..backend.deteccion import MediaPipeFaceDetector, largest_face
 from ..backend.embeddings import ArcFaceEmbedder
-from ..backend.face_quality import VIDEO_FACE_QUALITY, assess_face_quality
+from ..backend.face_quality import (
+    VIDEO_FACE_QUALITY,
+    WEBCAM_RECOGNITION_FACE_QUALITY,
+    assess_face_quality,
+)
 from ..backend.offline_video_analysis import analyze_video_offline
 from ..backend.video_analysis_cache import (
     analysis_at_time,
@@ -126,6 +159,7 @@ class FaceRecognitionGui:
         self.recent_embeddings = deque(maxlen=EMBEDDING_SMOOTHING_WINDOW)
         self.recent_predictions = deque(maxlen=SMOOTHING_WINDOW)
         self.frame_index = 0
+        self.last_webcam_diagnostic_time = float("-inf")
         self.last_detections = []
         self.last_predictions = []
         self.video_display_w = VIDEO_W
@@ -353,17 +387,33 @@ class FaceRecognitionGui:
 
         predictions = []
         for detection in detections:
-            quality = assess_face_quality(frame, detection)
+            quality = assess_face_quality(
+                frame,
+                detection,
+                WEBCAM_RECOGNITION_FACE_QUALITY,
+            )
             if not quality.ok:
                 if len(detections) == 1:
                     self.recent_embeddings.clear()
                 predictions.append(Prediction("desconocido", 0.0, float("inf"), method="calidad"))
+                self._log_webcam_diagnostic(
+                    quality=quality,
+                    prediction=predictions[-1],
+                    diagnostics=None,
+                )
                 continue
             embedding, _ = self._embedder().embed_face(frame, detection)
             if len(detections) == 1:
                 self.recent_embeddings.append(embedding)
                 embedding = average_embeddings(self.recent_embeddings)
-            predictions.append(self.classifier.predict(embedding))
+            prediction = self.classifier.predict(embedding)
+            diagnostics = (
+                self.classifier.prediction_diagnostics(embedding)
+                if hasattr(self.classifier, "prediction_diagnostics")
+                else None
+            )
+            predictions.append(prediction)
+            self._log_webcam_diagnostic(quality, prediction, diagnostics)
 
         if len(predictions) == 1:
             self.recent_predictions.append(predictions[0])
@@ -376,6 +426,30 @@ class FaceRecognitionGui:
 
         self.last_predictions = predictions
         return predictions
+
+    def _log_webcam_diagnostic(self, quality, prediction, diagnostics) -> None:
+        now = time.monotonic()
+        if now - self.last_webcam_diagnostic_time < 1.0:
+            return
+        self.last_webcam_diagnostic_time = now
+        details = diagnostics or {}
+        logger.warning(
+            "WEBCAM_RECOGNITION result=%s confidence=%.1f%% method=%s "
+            "candidate=%s distance=%s core=%s threshold=%s raw_confidence=%s "
+            "quality=%.3f quality_reason=%s classes=%s samples=%s",
+            prediction.label,
+            prediction.confidence * 100.0,
+            prediction.method,
+            details.get("candidate", "n/a"),
+            _format_diagnostic_number(details.get("distance")),
+            _format_diagnostic_number(details.get("core_distance")),
+            _format_diagnostic_number(details.get("threshold")),
+            _format_diagnostic_percent(details.get("calibrated_confidence")),
+            quality.score,
+            quality.reason,
+            details.get("classes", "n/a"),
+            details.get("training_samples", "n/a"),
+        )
 
     def _train_model(self) -> None:
         embeddings, labels = load_embeddings()
@@ -945,6 +1019,7 @@ class FaceRecognitionGui:
             detections,
             predictions,
             show_landmarks=show_landmarks,
+            landmark_draw_step=1,
         )
         self._update_video_texture(frame)
         self._update_actor_video_stats(len(detections), predictions, offline_record)
@@ -1280,6 +1355,14 @@ def average_embeddings(recent_embeddings):
     if norm > 0:
         embedding = embedding / norm
     return embedding.astype(np.float32)
+
+
+def _format_diagnostic_number(value) -> str:
+    return "n/a" if value is None else f"{float(value):.4f}"
+
+
+def _format_diagnostic_percent(value) -> str:
+    return "n/a" if value is None else f"{float(value) * 100.0:.1f}%"
 
 
 def format_video_time(seconds: float) -> str:

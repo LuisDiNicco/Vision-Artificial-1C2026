@@ -7,7 +7,7 @@ from ..backend.clasificador import Prediction
 from ..backend.deteccion import FaceDetection
 
 
-LANDMARK_DRAW_STEP = 1
+WEBCAM_LANDMARK_DRAW_STEP = 6
 FONT = cv2.FONT_HERSHEY_SIMPLEX
 COLOR_OK = (40, 210, 145)
 COLOR_WARN = (70, 95, 255)
@@ -18,6 +18,7 @@ def draw_face_annotations(
     detections: Iterable[FaceDetection],
     predictions: Optional[Iterable[Prediction]] = None,
     show_landmarks: bool = True,
+    landmark_draw_step: int = WEBCAM_LANDMARK_DRAW_STEP,
 ) -> None:
     predictions = list(predictions) if predictions is not None else []
     for idx, detection in enumerate(detections):
@@ -31,7 +32,7 @@ def draw_face_annotations(
             landmark_points = (
                 detection.landmarks
                 if detection.landmarks_are_sampled
-                else detection.landmarks[::LANDMARK_DRAW_STEP]
+                else detection.landmarks[::max(1, landmark_draw_step)]
             )
             for point in landmark_points:
                 cv2.circle(frame, (int(point[0]), int(point[1])), 2, (0, 255, 180), -1, cv2.LINE_AA)
