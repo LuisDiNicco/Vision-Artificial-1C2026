@@ -95,6 +95,8 @@ A partir de los embeddings, se asigna una identidad a cada rostro. Hay dos enfoq
 ```
 TP Integrador/
 ├── README.md                        # Este archivo
+├── run_tp_integrador.ps1            # Preparacion del entorno y ejecucion en Windows
+├── lista_famosos.txt                # Identidades disponibles en el dataset de famosos
 ├── tp_integrador_gui.py             # Interfaz grafica principal con Dear PyGui
 ├── src/
 │   └── tp_integrador/
@@ -155,6 +157,12 @@ pip install -r requirements.txt
 ```bash
 # Interfaz grafica integrada: registro, entrenamiento y reconocimiento
 python tp_integrador_gui.py
+```
+
+En Windows también se puede ejecutar el lanzador incluido en esta carpeta. El script crea el entorno virtual si no existe, instala las dependencias y abre la interfaz:
+
+```powershell
+.\run_tp_integrador.ps1
 ```
 
 La fuente de video en la interfaz es solo la **Webcam**. Desde el panel lateral se puede elegir el indice de camara y cambiarlo con **Cambiar camara** o **Siguiente**.

@@ -1,6 +1,6 @@
 $ErrorActionPreference = "Stop"
 
-$tpDir = Join-Path $PSScriptRoot "Trabajos Practicos\TP Integrador"
+$tpDir = $PSScriptRoot
 $venvDir = Join-Path $tpDir ".venv"
 $activateScript = Join-Path $venvDir "Scripts\Activate.ps1"
 
