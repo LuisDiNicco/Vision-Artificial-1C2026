@@ -1,12 +1,9 @@
 # TP Integrador - Reconocimiento Facial - Visión Artificial (1C 2026)
 
-El perfil, los benchmarks y la aceleración reversible del análisis offline se documentan en [OPTIMIZACION_VIDEO.md](OPTIMIZACION_VIDEO.md).
-
 ## Datos del trabajo práctico
 - **Materia:** Visión Artificial
 - **Institución:** UNLaM
 - **Cuatrimestre:** 1C 2026
-- **Entrega:** *(a confirmar)*
 
 ## Integrantes (Grupo 4)
 
@@ -15,6 +12,10 @@ El perfil, los benchmarks y la aceleración reversible del análisis offline se 
 | 43.630.151 | Antonioli, Iván Oscar |
 | 43.664.669 | Di Nicco, Luis Demetrio |
 | 41.069.597 | Rojas, Tomas Ian |
+
+## Video de demostración
+
+La ejecución completa del trabajo se presenta en [video_tp_integrador.mp4](assets/entrega/video_tp_integrador.mp4).
 
 ## Consigna
 
@@ -251,11 +252,6 @@ El cache guarda dos niveles:
 
 La app no vuelve a descargar ni reprocesar el dataset durante el analisis. Los centroides cacheados se usan para comparar el embedding del rostro del video y mostrar los resultados.
 
-Opciones razonables para una evolucion:
-- **Dear PyGui:** liviano y rapido para herramientas visuales con controles, sliders y paneles. Es la opcion incluida en `tp_integrador_gui.py`.
-- **PySide6 / Qt:** mejor para una app de escritorio mas completa. Es mas pesado, pero robusto.
-- **Web local:** FastAPI + frontend HTML/JS. Se ve mejor, pero integrar webcam + inferencia Python suma complejidad.
-
 ## Cómo funciona (resumen)
 
 1. **Registro (offline):** se capturan varias fotos de cada integrante, se extraen sus embeddings con ArcFace y se almacenan como referencia.
@@ -295,31 +291,6 @@ En pruebas con webcam puede ocurrir que la prediccion cambie mucho entre frames 
 
 La bibliografia revisada coincide en que el reconocimiento facial no debe interpretarse como una etapa aislada, sino como un pipeline completo: deteccion robusta, landmarks confiables, alineamiento, extraccion de embeddings y clasificacion con umbrales adecuados.
 
-### Mejoras respetando lo visto en clase
-
-Estas mejoras mantienen el enfoque del material de clase: MediaPipe/landmarks, alineamiento, embeddings ArcFace y clasificacion por distancia o SVM.
-
-- **Promediar embeddings de varios frames antes de decidir:** capturar una ventana corta de embeddings validos, normalizarlos, promediarlos y volver a normalizar el vector final. Esto reduce saltos causados por frames malos.
-- **Voto temporal de identidad:** conservar las ultimas predicciones y aceptar una identidad solo si aparece de forma consistente durante varios frames. Si hay desacuerdo fuerte, mostrar "analizando" o mantener la ultima identidad estable por un tiempo breve.
-- **Filtro de calidad mas estricto:** rechazar frames con blur, mala iluminacion, rostro muy pequeno, rostro cortado, pose lateral u ojos mal localizados antes de calcular el embedding.
-- **Alineamiento mas estable:** priorizar la transformacion por 5 puntos compatibles con ArcFace (ojos, nariz y comisuras de boca) para obtener una entrada canonica de 112x112, en vez de depender solo del rectangulo de la cara.
-- **Dataset propio mas variado:** registrar muestras de cada integrante con distintas luces, distancias, expresiones y leves cambios de pose. Es preferible tener pocas muestras buenas y variadas que muchas muestras casi iguales o borrosas.
-- **Umbrales calibrados con negativos:** ademas de distancias entre muestras de la misma persona, medir distancias contra personas no registradas para ajustar mejor cuando decir "desconocido".
-- **Separar SVM de rechazo por distancia:** usar el SVM para elegir la clase candidata, pero tomar la decision final con distancia a embeddings reales y umbral por persona. Esto evita aceptar una clase solo porque el SVM siempre debe elegir alguna.
-- **Comparacion multi-frame:** promediar varios embeddings buenos del rostro antes de compararlo contra los centroides de famosos. Asi el resultado depende menos de un frame puntual.
-- **Umbral para famosos:** mostrar "sin coincidencia clara" si la similitud coseno no supera un minimo definido empiricamente. No toda coincidencia en el top 5 representa un resultado fuerte.
-
-### Mejoras adicionales posibles
-
-Estas opciones van mas alla del minimo visto en clase, pero son compatibles con el proyecto si se quiere mejorar robustez.
-
-- **Seguimiento de rostro entre frames:** usar tracking para mantener el mismo rostro asociado a la misma identidad y evitar saltos cuando la deteccion cambia levemente.
-- **Normalizacion fotometrica:** aplicar correcciones suaves de brillo/contraste o ecualizacion controlada antes del embedding, cuidando no deformar la imagen de entrada del modelo.
-- **Clustering para depurar datos:** agrupar embeddings registrados por persona con DBSCAN o Chinese Whispers, como propone el material de clase, y detectar outliers. Si una muestra cae lejos del grupo, puede ser una captura mala o una cara mal alineada.
-- **Metricas de evaluacion:** armar un set de prueba con fotos propias y desconocidos, reportar accuracy, falsos positivos, falsos negativos y matriz de confusion.
-- **Busqueda aproximada si crece el dataset:** si el cache de famosos se vuelve muy grande, usar un indice de vecinos cercanos aproximados para acelerar la busqueda.
-- **Fusion de embedding y geometria:** para "dobles", combinar similitud de ArcFace con medidas de landmarks (relacion ancho/alto de rostro, distancia entre ojos, nariz-boca, mandibula). Esto puede acercarse mas al parecido percibido, aunque requiere calibracion.
-
 ## Referencias
 
 ### Material de clase
@@ -351,4 +322,3 @@ Estas opciones van mas alla del minimo visto en clase, pero son compatibles con 
 - En Python 3.12 se usa `mediapipe.tasks.vision.FaceLandmarker`. El archivo `face_landmarker.task` se descarga automáticamente en una carpeta temporal corta (`%TEMP%/tp_integrador_mediapipe`) para evitar problemas de rutas largas de Windows.
 - ArcFace es el modelo recomendado para embeddings por su precisión superior, usando TensorFlow Lite como backend de inferencia. El extractor soporta `auto`, `arcface` directo y `DeepFace` configurado con `model_name="ArcFace"`.
 - La categoría **"desconocido"** es obligatoria: el sistema debe rechazar rostros que no pertenecen a ninguna persona registrada.
-- Se sugiere umbral de distancia empírico (ej: 0.6 - 0.8) para decidir entre conocido/desconocido, ajustable según pruebas.
