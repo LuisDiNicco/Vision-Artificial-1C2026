@@ -16,6 +16,7 @@
 ## Video de demostración
 
 La ejecución completa del trabajo se presenta en [video_tp_integrador.mp4](assets/entrega/video_tp_integrador.mp4).
+
 La demostración del reconocimiento se presenta en [video_tp_integrador.mp4](assets/entrega/gif_reconocimiento.mp4).
 
 ## Consigna
